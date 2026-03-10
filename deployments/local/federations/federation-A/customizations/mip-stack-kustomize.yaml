@@ -1,12 +1,39 @@
 ---
-# JSON patches for mip-stack in federation-A
-# Version is managed in: shared-apps/mip-stack/mip-stack.yaml
-- op: replace
-  path: /spec/project
-  value: mip-argo-project-federation-a
-- op: replace
-  path: /spec/destination/namespace
-  value: federation-a
-- op: add
-  path: /spec/sources/0/helm/valueFiles/-
-  value: $values/deployments/local/federations/federation-A/customizations/mip-stack-values.yaml
+# Customizations for mip-stack in federation-a
+# Example
+# replicaCount: 3
+# image:
+#   tag: latest
+# resources:
+#   limits:
+#     cpu: "2"
+#     memory: "2Gi"
+#   requests:
+#     cpu: "1"
+#     memory: "1Gi"
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: mip-stack
+  namespace: argocd-mip-team
+  finalizers: [resources-finalizer.argocd.argoproj.io]
+spec:
+  project: mip-argo-project-federation-a
+  destination:
+    namespace: federation-a
+  sources:
+    - repoURL: https://github.com/Medical-Informatics-Platform/mip
+      targetRevision: 655396093de7df7bc738025d8207f57c0e8952be # 9.0.2
+      path: deployment/kubernetes
+      helm:
+        valueFiles:
+          - values.yaml
+          - $values/deployments/shared-apps/mip-stack/values.yaml
+          - $values/deployments/local/federations/federation-A/customizations/mip-stack-values.yaml
+    - repoURL: git@github.com:Medical-Informatics-Platform/mip-infra-staging.git
+      targetRevision: main
+      ref: values
+  syncPolicy:
+    syncOptions: [CreateNamespace=true, ApplyOutOfSyncOnly=true]
+    automated:
+      selfHeal: true

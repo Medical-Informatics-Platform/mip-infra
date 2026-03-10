@@ -581,6 +581,6 @@ This project has received funding from the European Union’s Horizon 2020 Frame
 
 ## 🔗 Related Projects
 
-- [MIP Deployment](https://github.com/HBPMedical/mip-deployment) - MIP Stack repository
+- [MIP Deployment](https://github.com/Medical-Informatics-Platform/mip) - MIP Stack repository
 - [Exareme2](https://github.com/madgik/exareme2) - Distributed analytics engine used by MIP
 - [Datacalog](https://github.com/madgik/datacatalog) - Datacatalog for the MIP

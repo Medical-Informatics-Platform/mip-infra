@@ -1,10 +1,9 @@
 ---
-managed_cluster: true
 log_level: INFO
 engines:
-  exareme2:
-    URL: http://exareme2-controller-service:5000
-mip:
+  exaflow:
+    URL: http://exaflow-controller-service:5000
+network:
   LINK: direct
   EXTERNAL_PROTOCOL: http
   PUBLIC_PROTOCOL: http
@@ -18,3 +17,6 @@ keycloak:
   URL: iam.ebrains.eu
   REALM: MIP
   SSL_REQUIRED: external
+platform-ui:
+  ingress:
+    redirectRootTo: ""

@@ -22,9 +22,9 @@ spec:
   destination:
     namespace: federation-z
   sources:
-    - repoURL: https://github.com/HBPMedical/mip-deployment
-      targetRevision: f7c64415c48f56bdb25188721d5857a5d79e2547
-      path: kubernetes
+    - repoURL: https://github.com/Medical-Informatics-Platform/mip
+      targetRevision: 655396093de7df7bc738025d8207f57c0e8952be # 9.0.2
+      path: deployment/kubernetes
       helm:
         valueFiles:
           - values.yaml

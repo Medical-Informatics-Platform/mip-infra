@@ -75,7 +75,7 @@ metadata:
 spec:
   podSelector:
     matchLabels:
-      app: frontend
+      app: platform-ui
   policyTypes: ["Ingress"]
   ingress:
   - from:
