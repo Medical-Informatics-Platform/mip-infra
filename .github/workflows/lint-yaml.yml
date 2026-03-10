@@ -12,7 +12,7 @@ jobs:
       contents: write  # Needed to push commits to the PR branch
     steps:
       - name: Checkout PR Branch
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4
         with:
           ref: ${{ github.head_ref }}  # Checkout the PR head branch
           token: ${{ secrets.GITHUB_TOKEN }}  # Use GITHUB_TOKEN for commit/push
