@@ -19,4 +19,4 @@ keycloak:
   SSL_REQUIRED: external
 platform-ui:
   ingress:
-    redirectRootTo: ""
+    redirectRootTo: ''

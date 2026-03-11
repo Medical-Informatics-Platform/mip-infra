@@ -11,7 +11,7 @@ spec:
     namespace: federation-z
   sources:
     - repoURL: https://github.com/madgik/exareme2
-      targetRevision: cdfb9873e6675f646ac4267113607c7a18118610 # 1.0.0
+      targetRevision: cdfb9873e6675f646ac4267113607c7a18118610  # 1.0.0
       path: kubernetes
       helm:
         valueFiles:
