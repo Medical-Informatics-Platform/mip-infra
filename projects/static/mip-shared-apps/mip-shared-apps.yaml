@@ -9,7 +9,7 @@ spec:
   sourceRepos:
     - https://github.com/Medical-Informatics-Platform/mip-infra.git
     - https://github.com/madgik/exareme2
-    - https://github.com/HBPMedical/mip-deployment
+    - https://github.com/Medical-Informatics-Platform/mip
   destinations:
     - namespace: federation-*
       server: https://kubernetes.default.svc
