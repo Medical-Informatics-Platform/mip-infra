@@ -16,5 +16,5 @@
       kind: Deployment
       name: exareme2
       jsonPointers:
-        - /spec/replicas # Allow HPA to manage replicas
+        - /spec/replicas  # Allow HPA to manage replicas
         - /spec/template/spec/containers/0/resources
