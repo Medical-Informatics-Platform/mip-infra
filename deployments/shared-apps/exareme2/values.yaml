@@ -4,3 +4,5 @@ exaflow_images:
 managed_cluster: true
 log_level: INFO
 localnodes: 1
+flower:
+  enabled: false
