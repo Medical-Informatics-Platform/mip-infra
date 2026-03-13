@@ -94,8 +94,12 @@ metadata:
     mip.namespace-type: common
 spec:
   podSelector:
-    matchLabels:
-      app: platform-ui
+    matchExpressions:
+      - key: app
+        operator: In
+        values:
+          - platform-ui
+          - frontend
   policyTypes: ["Ingress"]
   ingress:
   - from:
