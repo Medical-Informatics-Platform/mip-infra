@@ -1,12 +1,13 @@
 ---
 apiVersion: v2
 name: eck-stack-rke2
-description: Helm chart to install the Elastic Cloud on Kubernetes (ECK) operator
-  and sample Elastic Stack resources on an RKE2 cluster
+description: Helm chart to deploy Elastic Stack resources (Elasticsearch, Kibana,
+  Beats, etc.) on an RKE2 cluster managed by an existing Elastic Cloud on Kubernetes
+  (ECK) operator
 kubeVersion: '>=1.23.0-0'
 type: application
 version: 0.2.0
 appVersion: 2.13.0
 icon: https://www.elastic.co/static/images/elastic-logo-200.png
-keywords: [elasticsearch, eck, elastic-stack, operator]
+keywords: [elasticsearch, eck, elastic-stack]
 dependencies: []
