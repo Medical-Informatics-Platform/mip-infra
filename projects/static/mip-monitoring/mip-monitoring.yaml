@@ -6,7 +6,8 @@ metadata:
   namespace: argocd-mip-team
 spec:
   description: Monitoring resources like ECK
-  sourceRepos: [https://github.com/Medical-Informatics-Platform/mip-infra.git]
+  sourceRepos:
+    - https://github.com/Medical-Informatics-Platform/mip-infra.git
   destinations:
     - namespace: elastic-system
       server: https://kubernetes.default.svc
