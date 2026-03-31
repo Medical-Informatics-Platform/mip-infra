@@ -4,7 +4,7 @@ cluster:
   namespace: federation-a
   managed: true
 network:
-  publicHost: federation-a.mip-tds.chuv.cscs.ch
+  publicHost: federation-a.example.com
 platform-ui:
   ingress:
     className: nginx
