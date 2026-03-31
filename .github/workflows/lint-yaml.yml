@@ -45,7 +45,7 @@ jobs:
           git config --global user.email 'github-actions[bot]@users.noreply.github.com'
           git add .
           git commit -m "style: auto-fix YAML linting issues ✨"
-          git push origin ${{ github.head_ref }}
+          git push origin "HEAD:${{ github.head_ref }}"
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       - name: Final Check
