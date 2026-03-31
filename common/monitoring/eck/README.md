@@ -101,7 +101,7 @@ kibana:
 Deploy (or upgrade) the chart from the repository root:
 
 ```bash
-helm upgrade --install eck . -f alert-notifier-values.yaml \
+helm upgrade --install eck common/monitoring/eck -f alert-notifier-values.yaml \
   --namespace elastic-system --create-namespace
 ```
 
