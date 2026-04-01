@@ -5,7 +5,3 @@ cluster:
   managed: true
 network:
   publicHost: federation-a.example.com
-platform-ui:
-  ingress:
-    className: haproxy-public
-    certManagerClusterIssuer: letsencrypt-public

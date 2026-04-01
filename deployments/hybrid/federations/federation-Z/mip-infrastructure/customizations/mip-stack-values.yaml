@@ -3,7 +3,3 @@ log_level: DEBUG
 namespace: federation-z
 mip:
   PUBLIC_HOST: federation-z.example.com
-platform-ui:
-  ingress:
-    className: haproxy-public
-    certManagerClusterIssuer: letsencrypt-public
