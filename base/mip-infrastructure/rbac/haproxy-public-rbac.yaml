@@ -49,10 +49,7 @@ rules:
     resources: [customresourcedefinitions]
     verbs: [get, list, watch]
   - apiGroups: [apps]
-    resources:
-      - replicasets
-      - deployments
-      - daemonsets
+    resources: [replicasets, deployments, daemonsets]
     verbs: [get, list]
   - apiGroups: [ingress.v1.haproxy.org]
     resources: ['*']
