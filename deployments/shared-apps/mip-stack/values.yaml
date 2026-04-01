@@ -21,4 +21,3 @@ platform-ui:
   ingress:
     redirectRootTo: ''
     className: haproxy-public
-    certManagerClusterIssuer: letsencrypt-public
