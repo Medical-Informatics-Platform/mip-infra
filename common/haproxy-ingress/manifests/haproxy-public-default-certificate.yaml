@@ -1,3 +1,4 @@
+---
 apiVersion: cert-manager.io/v1
 kind: Issuer
 metadata:
@@ -14,8 +15,7 @@ metadata:
 spec:
   secretName: haproxy-public-default-tls
   commonName: '*.mip.chuv.cscs.ch'
-  dnsNames:
-    - '*.mip.chuv.cscs.ch'
+  dnsNames: ['*.mip.chuv.cscs.ch']
   issuerRef:
     group: cert-manager.io
     kind: Issuer

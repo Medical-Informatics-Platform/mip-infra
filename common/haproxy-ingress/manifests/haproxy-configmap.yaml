@@ -9,7 +9,7 @@ metadata:
     app.kubernetes.io/component: controller
     app.kubernetes.io/managed-by: argocd
 data:
-  ssl-redirect: "true"
-  ssl-redirect-port: "443"
+  ssl-redirect: 'true'
+  ssl-redirect-port: '443'
   ssl-certificate: ingress-nginx/haproxy-public-default-tls
-  forwarded-for: "true"
+  forwarded-for: 'true'

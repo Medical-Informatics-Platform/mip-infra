@@ -67,7 +67,7 @@ metadata:
   namespace: default
   annotations:
     cert-manager.io/cluster-issuer: letsencrypt
-    haproxy.org/path-rewrite: "/(.*) /"
+    haproxy.org/path-rewrite: /(.*) /
 spec:
   ingressClassName: haproxy-public
   rules:
