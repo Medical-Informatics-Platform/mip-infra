@@ -13,7 +13,7 @@ spec:
     solvers:
       - http01:
           ingress:
-            ingressClassName: nginx-public
+            ingressClassName: haproxy-public
 ---
 # clusterissuer-letsencrypt-public.yaml
 apiVersion: cert-manager.io/v1
@@ -29,4 +29,4 @@ spec:
     solvers:
       - http01:
           ingress:
-            ingressClassName: nginx-public
+            ingressClassName: haproxy-public

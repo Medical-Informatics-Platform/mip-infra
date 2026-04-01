@@ -7,5 +7,5 @@ network:
   publicHost: federation-a.example.com
 platform-ui:
   ingress:
-    className: nginx
-    certManagerClusterIssuer: letsencrypt
+    className: haproxy-public
+    certManagerClusterIssuer: letsencrypt-public

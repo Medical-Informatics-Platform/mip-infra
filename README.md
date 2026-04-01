@@ -320,7 +320,7 @@ argocd repo add git@github.com:Medical-Informatics-Platform/mip-deployments.git 
   --ssh-private-key-path ./argocd-remote-key \
   --name mip-infra
 
-kubectl apply -f base/mip-infrastructure/rbac/nginx-public-rbac.yaml
+kubectl apply -f base/mip-infrastructure/rbac/haproxy-public-rbac.yaml
 kubectl apply -f base/mip-infrastructure/rbac/submariner-rbac.yaml
 ```
 

@@ -2,7 +2,7 @@
 apiVersion: argoproj.io/v1alpha1
 kind: Application
 metadata:
-  name: nginx-public-ingress
+  name: haproxy-public-ingress
   namespace: argocd-mip-team  # This is the namespace where Argo CD runs
   finalizers: [resources-finalizer.argocd.argoproj.io]
 spec:
@@ -10,11 +10,11 @@ spec:
   source:
     repoURL: https://github.com/Medical-Informatics-Platform/mip-infra.git
     targetRevision: main
-    path: common/nginx-ingress/manifests
+    path: common/haproxy-ingress/manifests
   destination:
     server: https://kubernetes.default.svc
     namespace: ingress-nginx
   syncPolicy:
-    syncOptions: [CreateNamespace=true, Replace=true]
+    syncOptions: [CreateNamespace=true, ServerSideApply=true]
     automated:
       selfHeal: true
