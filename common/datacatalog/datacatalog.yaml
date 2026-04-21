@@ -8,8 +8,8 @@ metadata:
 spec:
   project: mip-argo-project-common
   sources:
-    - repoURL: https://github.com/madgik/datacatalog
-      targetRevision: 1ada3bb89efc651a53c16f57c0b210a78e096fff  # 1.2.1
+    - repoURL: https://github.com/Medical-Informatics-Platform/datacatalog
+      targetRevision: bd558c42b988be413738078cf40f30d37a670be1 # 2.0.0
       path: kubernetes
       helm:
         valueFiles: [values.yaml, $values/common/datacatalog/values.yaml]

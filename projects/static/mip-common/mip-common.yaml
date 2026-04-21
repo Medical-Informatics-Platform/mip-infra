@@ -8,7 +8,7 @@ spec:
   description: Common resources like monitoring, security, and datacatalog
   sourceRepos:
     - https://github.com/Medical-Informatics-Platform/mip-infra.git
-    - https://github.com/madgik/datacatalog
+    - https://github.com/Medical-Informatics-Platform/datacatalog
     - https://prometheus-community.github.io/helm-charts
     - https://grafana.github.io/helm-charts
     - https://charts.jetstack.io

@@ -1,5 +1,3 @@
 ---
-log_level: DEBUG
-namespace: federation-z
-mip:
-  PUBLIC_HOST: federation-z.example.com
+global:
+  publicHost: federation-z.example.com

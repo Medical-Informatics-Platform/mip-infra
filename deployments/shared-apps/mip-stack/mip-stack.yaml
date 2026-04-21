@@ -12,7 +12,7 @@ metadata:
 spec:
   sources:
     - repoURL: https://github.com/Medical-Informatics-Platform/mip
-      targetRevision: 655396093de7df7bc738025d8207f57c0e8952be  # 9.0.2
+      targetRevision: 76fa985d226d83539cd9e5a3cbcf08a2465f9408  # 9.0.3
       path: deployment/kubernetes
       helm:
         valueFiles:

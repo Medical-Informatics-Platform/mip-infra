@@ -1,23 +1,7 @@
 ---
-namespace: mip-common-datacatalog
-managed_cluster: true
-dqt:
-  flaskEnv: development
-  flaskDebug: '1'
-datacatalogDb:
-  storageClassName: ceph-corbo-cephfs
-  image: postgres:15
-  db: datacatalog
-  storage: 5Gi
-backend:
-  dbUrl: jdbc:postgresql://datacatalogdb:5432/datacatalog
+cluster:
+  managed: true
+  storageClasses:
+    managed: ceph-corbo-cephfs
+global:
   publicHost: datacatalogue.mip.ebrains.eu
-  dqtUrl: http://data-quality-tool:8000
-  authentication: 'true'
-  keycloak:
-    authUrl: https://iam.ebrains.eu/auth/
-    realm: MIP
-    sslRequired: none
-persistence:
-  enabled: true
-  accessModes: [ReadWriteOnce]

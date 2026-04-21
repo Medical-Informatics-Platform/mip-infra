@@ -1,7 +1,3 @@
 ---
-log_level: DEBUG
-cluster:
-  namespace: federation-a
-  managed: true
-network:
+global:
   publicHost: federation-a.example.com
