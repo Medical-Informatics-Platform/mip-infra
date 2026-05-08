@@ -48,8 +48,6 @@ resources:
       kind: Job
     - group: batch
       kind: CronJob
-    - group: extensions
-      kind: Ingress
   # Explicitly blacklist sensitive resources that should not be modified by federation applications
   blacklist:
     - group: rbac.authorization.k8s.io

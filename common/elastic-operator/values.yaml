@@ -1,5 +1,0 @@
----
-eck-operator:
-  createNamespace: false
-  webhook:
-    enabled: true

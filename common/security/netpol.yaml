@@ -82,7 +82,6 @@ spec:
     - list:
         elements:
           - commonNamespace: mip-common-datacatalog
-          - commonNamespace: mip-common-security
   goTemplate: true
   template:
     metadata:
