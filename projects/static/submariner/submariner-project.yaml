@@ -1,4 +1,11 @@
 ---
+# rbac-lint: ignore
+# Submariner ships namespaced Role/RoleBinding for the broker and operator
+# (see common/submariner/{broker,operator}/kustomization.yaml). Those RBAC
+# resources are scoped to the submariner-k8s-broker and submariner-operator
+# namespaces only, so this project legitimately needs Role/RoleBinding in
+# its namespaceResourceWhitelist and the global blacklist drift-check is
+# explicitly opted out for this file.
 apiVersion: argoproj.io/v1alpha1
 kind: AppProject
 metadata:
