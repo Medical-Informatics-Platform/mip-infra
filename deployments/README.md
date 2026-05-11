@@ -1,30 +1,36 @@
-## About deployments
+# Deployments
 
-The contents of this directory have been migrated to the [mip-deployments](https://github.com/Medical-Informatics-Platform/mip-deployments) repository. Our deployments are private, therefore we do not commit them to this repo but we upkeep a public deployable sample here. The `shared-apps` is still in use but our `local` and `hybrid` federations reside in the other repository and might contain overridings of the `shared-apps` default configurations.
+Per-environment and per-federation values consumed by the
+`mip-infrastructure` ApplicationSet.
 
-### For Private Users (MIP Team)
+## Audience
 
-If you are a member of the MIP team, you do not have to change anything to your configs if you use the latest files of this repo.
+> If you're a federation operator looking to **deploy MIP into your own
+> cluster**, this repo is **not** the right starting point — it is the
+> internal staging configuration of the MIP team. Use the published
+> deployment guide instead.
+>
+> If you're on the MIP team and just landed here, see
+> [`../docs/getting-started.md`](../docs/getting-started.md).
 
-### For Public Users
-
-This repository still contains a working configuration that can be used for public local deployments.
-However, you must run the following commands from the root directory of this repo.
-```
-cd mip-infra
-
-# Switch any private git URLs to the public repo
-
-sed -i 's|git@github.com:Medical-Informatics-Platform/mip-deployments.git|https://github.com/Medical-Informatics-Platform/mip-infra.git|g' base/mip-infrastructure/mip-infrastructure.yaml
-sed -i 's|git@github.com:Medical-Informatics-Platform/mip-deployments.git|https://github.com/Medical-Informatics-Platform/mip-infra.git|g' base/argo-projects.yaml
-sed -i 's|git@github.com:Medical-Informatics-Platform/mip-deployments.git|https://github.com/Medical-Informatics-Platform/mip-infra.git|g' deployments/shared-apps/mip-stack/mip-stack.yaml
-sed -i 's|git@github.com:Medical-Informatics-Platform/mip-deployments.git|https://github.com/Medical-Informatics-Platform/mip-infra.git|g' deployments/shared-apps/exareme2/exareme2.yaml
-
-sed -i '/git@github.com:NeuroTech-Platform\/mip-deployments.git/d' projects/static/mip-federations/mip-federations.yaml
-sed -i '/git@github.com:NeuroTech-Platform\/mip-deployments.git/d' projects/templates/federation/values.yaml
-
-# Remove MetalLB-specific lines from the public ingress Service (so it works generically)
-sed -i '/metallb\.io\/address-pool: pool-no-auto/d' common/nginx-ingress/manifests/nginx-public-service.yaml
-sed -i '/^\s*loadBalancerIP:\s*148\.187\.143\.44\s*$/d' common/nginx-ingress/manifests/nginx-public-service.yaml
+## Layout
 
 ```
+deployments/
+├── local/          # Single-cluster deployments (one cluster, many federations)
+│   └── federations/<name>/
+│       ├── kustomization.yaml         # namePrefix + patches
+│       ├── customizations/            # per-fed values overrides
+│       └── federation-<name>.yaml     # wrapper Argo CD Application
+├── hybrid/         # Multi-cluster deployments (skeleton, in progress)
+└── shared-apps/    # Federation-neutral app templates referenced by federations
+    ├── exareme2/
+    └── mip-stack/
+```
+
+The `mip-infrastructure` ApplicationSet auto-discovers each directory under
+`local/federations/` and creates the matching wrapper Application.
+
+## Adding or customising a federation
+
+See [`../docs/operations.md`](../docs/operations.md#adding-a-federation).

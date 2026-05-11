@@ -1,242 +1,93 @@
-# haproxy-ingress (public edge)
+# HAProxy public ingress
 
-This kustomize set deploys a **second ingress-nginx controller** that publishes a **different LoadBalancer IP** from your default one.
+This folder defines the public HAProxy Kubernetes Ingress Controller used for
+externally exposed MIP services.
 
-- Ingresses using your existing class (e.g. `nginx`) keep **IP A**.  
-- Ingresses using **`haproxy-public`** get **IP B**.
+The top-level Argo CD wrapper is [haproxy-ingress.yaml](haproxy-ingress.yaml).
+It points Argo CD at [manifests](manifests), which contains the actual
+Kubernetes resources.
 
-It’s portable (cloud LBs or MetalLB), avoids filesystem mounts, and uses unique flags/labels so it won’t clash with anything else.
+RBAC is defined separately in
+[base/mip-infrastructure/rbac/haproxy-public-rbac.yaml](../../base/mip-infrastructure/rbac/haproxy-public-rbac.yaml).
 
-> **RBAC is applied separately:**  
-> `base/mip-infrastructure/rbac/haproxy-public-rbac.yaml`  
-> Apply that before (or together with) this kustomization.
+## What gets deployed
 
----
+- An Argo CD `Application` named `haproxy-public-ingress`
+- A HAProxy KIC `Deployment` in `ingress-nginx`
+- A `LoadBalancer` Service named `haproxy-public-controller`
+- An `IngressClass` named `haproxy-public`
+- A default certificate, ClusterIssuer, and ConfigMap used by the controller
 
-## What’s here
+Current controller settings:
+- Image: `haproxytech/kubernetes-ingress:3.2.8`
+- Publish service: `ingress-nginx/haproxy-public-controller`
+- Ingress class: `haproxy-public`
+- IngressClass controller string: `haproxy.org/ingress-controller/haproxy-public`
+- MetalLB IP: `x.x.x.x`
 
-```
-common/haproxy-ingress/
-├── kustomization.yaml
-├── haproxy-public-deployment.yaml      # second ingress-nginx controller
-├── haproxy-public-ingressclass.yaml    # IngressClass: haproxy-public
-└── haproxy-public-service.yaml         # LoadBalancer Service for IP B
-```
+## How to use it
 
-The RBAC this controller needs lives outside this folder:  
-`base/mip-infrastructure/rbac/haproxy-public-rbac.yaml`.
+1. Apply the RBAC in
+   [base/mip-infrastructure/rbac/haproxy-public-rbac.yaml](../../base/mip-infrastructure/rbac/haproxy-public-rbac.yaml).
+2. Sync the Argo CD Application from [haproxy-ingress.yaml](haproxy-ingress.yaml).
+3. Create an `Ingress` with `spec.ingressClassName: haproxy-public`.
+4. If the hostname is public, provision TLS with cert-manager as usual.
 
----
-
-## How “two IPs” is achieved
-
-This controller uses **unique identifiers**:
-
-- `--controller-class = k8s.io/ingress-haproxy-public`
-- `--ingress-class   = haproxy-public`
-- `--election-id     = ingress-haproxy-public-leader`
-- `--publish-service = <namespace>/haproxy-public-controller` (the Service that owns **IP B**)
-
-Ingresses that set `spec.ingressClassName: haproxy-public` will be reconciled here and get **IP B** in their `.status.loadBalancer`.
-
----
-
-## Quick start
-
-```bash
-# 1) Apply RBAC (required)
-kubectl apply -f base/mip-infrastructure/rbac/haproxy-public-rbac.yaml
-
-# 2) Apply this kustomization
-kubectl apply -k common/haproxy-ingress/
-
-# 3) Watch the controller come up
-kubectl -n ingress-nginx get pods -l app.kubernetes.io/instance=haproxy-public -w
-
-# 4) Verify the public LoadBalancer IP (IP B)
-kubectl -n ingress-nginx get svc haproxy-public-controller -o wide
-
-# 5) Point an Ingress at it
-# Preferred: set the spec field in the manifest:
-# spec:
-#   ingressClassName: haproxy-public
-# OR patch an existing object (compat annotation):
-kubectl -n <ns> annotate ingress/<name> kubernetes.io/ingress.class=haproxy-public --overwrite
-
-# 6) Confirm the Ingress shows IP B
-kubectl get ingress -A -o wide | grep haproxy-public
-```
-
----
-
-## Files (overview)
-
-### `haproxy-public-ingressclass.yaml`
+Example:
 
 ```yaml
 apiVersion: networking.k8s.io/v1
-kind: IngressClass
+kind: Ingress
 metadata:
-  name: haproxy-public
+  name: example
+  namespace: default
 spec:
-  controller: k8s.io/ingress-haproxy-public   # must match --controller-class
+  ingressClassName: haproxy-public
+  rules:
+    - host: example.mip-tds.chuv.cscs.ch
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: example
+                port:
+                  number: 80
 ```
 
-### `haproxy-public-service.yaml` (your **public** LoadBalancer)
-
-```yaml
-apiVersion: v1
-kind: Service
-metadata:
-  name: haproxy-public-controller
-  namespace: ingress-nginx
-  # Add provider-specific annotations here as needed.
-  # For MetalLB you can request a pool or pin an IP:
-  # annotations:
-  #   metallb.io/address-pool: pool-no-auto
-spec:
-  type: LoadBalancer
-  externalTrafficPolicy: Local
-  # MetalLB only: pin a specific address if desired
-  # loadBalancerIP: 203.0.113.44
-  ports:
-    - { name: http,  port: 80,  targetPort: http }
-    - { name: https, port: 443, targetPort: https }
-  selector:
-    app.kubernetes.io/name: haproxy-public
-    app.kubernetes.io/instance: haproxy-public
-    app.kubernetes.io/component: controller
-```
-
-### `haproxy-public-deployment.yaml` (the second controller)
-
-```yaml
-apiVersion: apps/v1
-kind: Deployment
-metadata:
-  name: haproxy-public-controller
-  namespace: ingress-nginx
-  labels:
-    app.kubernetes.io/name: haproxy-public
-    app.kubernetes.io/instance: haproxy-public
-    app.kubernetes.io/component: controller
-spec:
-  replicas: 1
-  selector:
-    matchLabels:
-      app.kubernetes.io/name: haproxy-public
-      app.kubernetes.io/instance: haproxy-public
-      app.kubernetes.io/component: controller
-  template:
-    metadata:
-      labels:
-        app.kubernetes.io/name: haproxy-public
-        app.kubernetes.io/instance: haproxy-public
-        app.kubernetes.io/component: controller
-    spec:
-      serviceAccountName: haproxy-public
-      containers:
-        - name: controller
-          image: registry.k8s.io/ingress-nginx/controller:v1.13.0
-          imagePullPolicy: IfNotPresent
-          args:
-            - /haproxy-ingress-controller
-            - --publish-service=$(POD_NAMESPACE)/haproxy-public-controller
-            - --election-id=ingress-haproxy-public-leader
-            - --controller-class=k8s.io/ingress-haproxy-public
-            - --ingress-class=haproxy-public
-            - --watch-ingress-without-class=false
-          env:
-            - name: POD_NAMESPACE
-              valueFrom: { fieldRef: { fieldPath: metadata.namespace } }
-            - name: POD_NAME
-              valueFrom: { fieldRef: { fieldPath: metadata.name } }
-          ports:
-            - { name: http,  containerPort: 80 }
-            - { name: https, containerPort: 443 }
-          livenessProbe:
-            httpGet: { path: /healthz, port: 10254 }
-            initialDelaySeconds: 10
-            periodSeconds: 10
-          readinessProbe:
-            httpGet: { path: /healthz, port: 10254 }
-            initialDelaySeconds: 10
-            periodSeconds: 10
-      nodeSelector:
-        kubernetes.io/os: linux
-      terminationGracePeriodSeconds: 300
-```
-
-> If you rename the IngressClass or Service, update these flags to match:  
-> `--ingress-class=<your-class>` • `--controller-class=<your-controller-string>` • `--publish-service=$(POD_NAMESPACE)/<your-service>` • and the `IngressClass.spec.controller`.
-
----
-
-## Configuration notes
-
-### Service (LoadBalancer)
-
-- **MetalLB**: keep `loadBalancerIP` to pin a fixed address or use `metallb.io/address-pool` to allocate from a pool.  
-- **Cloud LBs**: remove `loadBalancerIP` and add provider annotations if required.
-
-### Optional: PROXY protocol
-
-If your LB/MetalLB speaks PROXY protocol:
-
-- annotate the **Service** (MetalLB): `metallb.io/proxy-protocol: "true"`  
-- set `use-proxy-protocol: "true"` in a controller ConfigMap (if you add one)
-
----
-
-## RBAC (applied separately)
-
-This controller needs RBAC that allows it to:
-
-- read common cluster objects (services, endpoints, pods, namespaces, …)
-- **update/patch** `ingresses/status`
-- leader election using a **Lease** in `ingress-nginx`:
-  - **must** be able to **create** `leases` (cannot restrict `create` by name)
-  - may then `get/list/watch/update/patch` the specific lease object (e.g., `ingress-haproxy-public-leader`)
-
-Apply from:  
-`base/mip-infrastructure/rbac/haproxy-public-rbac.yaml`
-
----
-
-## Verification & troubleshooting
+## Verification
 
 ```bash
-# Controller is running
-kubectl -n ingress-nginx get pods -l app.kubernetes.io/instance=haproxy-public
-
-# Lease exists & updates
-kubectl -n ingress-nginx get lease | grep ingress-haproxy-public-leader
-kubectl -n ingress-nginx logs deploy/haproxy-public-controller --tail=100 | egrep -i 'acquired lease|became leader'
-
-# Publish-service has an external IP (IP B)
-kubectl -n ingress-nginx get svc haproxy-public-controller -o jsonpath='{.status.loadBalancer.ingress[0].ip}{"\n"}'
-
-# Ingresses using haproxy-public show IP B
+kubectl -n ingress-nginx get deploy haproxy-public-controller
+kubectl -n ingress-nginx get svc haproxy-public-controller -o wide
 kubectl get ingress -A -o wide | grep haproxy-public
+kubectl -n ingress-nginx logs deploy/haproxy-public-controller --tail=100
 ```
 
-**Common pitfalls**
+Expected result:
+- The Service has external IP `x.x.x.x`.
+- `haproxy-public` Ingresses show that IP in their `ADDRESS` column.
 
-- `forbidden ... cannot create resource "leases"` → RBAC must grant `create` on `leases` (unscoped by name) **and** specific-name access for `get/list/watch/update/patch`.
-- `Ignoring ingress because of error while validating ingress class` → `IngressClass.spec.controller` must equal the controller’s `--controller-class`.
-- Wrong IP in Ingress status → ensure `--publish-service` points at `ingress-nginx/haproxy-public-controller` and that Service has an external IP.
-- Service never gets an IP → check LB annotations/quotas (cloud) or MetalLB pools/selectors.
-- TLS warnings “Using default certificate” → expected until the referenced TLS Secrets match your hostnames.
+## Troubleshooting
 
----
+- If the Service never gets an external IP, check the MetalLB pool and the
+  `metallb.io/address-pool` annotation in
+  [manifests/haproxy-public-service.yaml](manifests/haproxy-public-service.yaml).
+- If the controller is running but `haproxy-public` Ingresses stay without an
+  `ADDRESS`, check controller logs and confirm RBAC still allows `update` and
+  `patch` on `ingresses/status` in
+  [base/mip-infrastructure/rbac/haproxy-public-rbac.yaml](../../base/mip-infrastructure/rbac/haproxy-public-rbac.yaml).
+- A missing TLS secret can break a specific Ingress, but it is not enough to
+  explain multiple `haproxy-public` Ingresses with ready certificates and empty
+  `status.loadBalancer`.
+- The controller version pin lives in
+  [manifests/haproxy-public-deployment.yaml](manifests/haproxy-public-deployment.yaml).
 
-## Upgrading the controller
-
-Edit the image tag in `haproxy-public-deployment.yaml`:
-
-```yaml
-image: registry.k8s.io/ingress-nginx/controller:v1.13.0
-```
+Known staging observation:
+- `haproxytech/kubernetes-ingress:3.2.6` was observed reconciling HAProxy
+  backend configuration while leaving `Ingress.status.loadBalancer` empty.
+  This folder now pins `3.2.8` for follow-up validation.
 
 Apply and watch the rollout:
 
