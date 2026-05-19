@@ -5,7 +5,7 @@ dqt:
   flaskEnv: development
   flaskDebug: '1'
 datacatalogDb:
-  storageClassName: ceph-corbo-cephfs
+  storageClassName: ceph-corbo-cephfs-retain
   image: postgres:15
   db: datacatalog
   storage: 5Gi
