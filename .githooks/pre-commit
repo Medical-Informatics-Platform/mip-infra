@@ -4,7 +4,7 @@
 # when on a feature branch, regardless of whether they are staged.
 CRITICAL_FILES=(
   "base/mip-infrastructure/mip-infrastructure.yaml"
-  "base/argo-projects.yaml"
+  "base/argo-projects/argo-projects.yaml"
   "common/security/netpol.yaml"
 )
 
@@ -215,7 +215,7 @@ if [[ "$ERROR_FOUND" -ne 0 ]]; then
   done
 
   echo "Why this can be an issue:"
-  echo "  If an ArgoCD application for your '$CURRENT_BRANCH' branch (e.g., created with --path base)"
+  echo "  If an ArgoCD application for your '$CURRENT_BRANCH' branch (e.g., created with --path base/argo-projects)"
   echo "  uses a configuration file (like an ApplicationSet in 'base/mip-infrastructure/mip-infrastructure.yaml'),"
   echo "  and that file internally specifies 'revision: main' or 'targetRevision: main',"
   echo "  then the deployment for '$CURRENT_BRANCH' will pull those specific parts from 'main'."

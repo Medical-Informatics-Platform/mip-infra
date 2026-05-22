@@ -1,0 +1,39 @@
+---
+# Argo CD UI/API exposure via our KaaS Traefik install.
+#
+# Traefik terminates TLS (cert issued by the `letsencrypt` ClusterIssuer)
+# and proxies HTTP to argocd-server, which runs in --insecure mode.
+# The argocd CLI must be invoked with --grpc-web (HTTP/1.1 keep-alive),
+# e.g.  `argocd login argocd.example.com --grpc-web`.
+#
+# Hostname is a placeholder — replace `argocd.example.com` with the real
+# DNS record before applying. Same goes for the TLS secret name if you
+# want to share an existing wildcard secret instead of letting cert-manager
+# provision a per-host one.
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: argocd-server
+  annotations:
+    cert-manager.io/cluster-issuer: letsencrypt
+    # Force HTTP->HTTPS at Traefik.
+    traefik.ingress.kubernetes.io/router.entrypoints: websecure
+    traefik.ingress.kubernetes.io/router.tls: "true"
+spec:
+  ingressClassName: traefik
+  tls:
+    - hosts:
+        - argocd.example.com
+      secretName: argocd-server-tls
+  rules:
+    - host: argocd.example.com
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: argocd-server
+                port:
+                  name: http
+

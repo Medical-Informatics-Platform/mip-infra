@@ -1,0 +1,37 @@
+---
+name: Argo CD upstream ClusterRole drift
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - argo-setup/patches/kustomization.yaml
+      - argo-setup/patches/patch-argocd-application-controller-clusterrole.yaml
+      - argo-setup/patches/patch-argocd-server-clusterrole.yaml
+      - argo-setup/patches/patch-argocd-applicationset-controller-clusterrole.yaml
+      - argo-setup/upstream-snapshot/**
+      - scripts/check-upstream-argo-clusterroles.sh
+      - .github/workflows/argo-clusterroles-drift.yml
+  schedule:
+    # Weekly run catches upstream releases that bump the rules even when no
+    # PR touches argo-setup/.
+    - cron: '23 4 * * 1'
+jobs:
+  drift:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+      - name: Install yq (pinned + sha256 verified)
+        env:
+          YQ_VERSION: v4.53.2
+          YQ_SHA256: 44c3c6df6c58ef1460d98425954ca5e832926e0e8a1d75c5c8fd261691351510
+        run: |
+          set -euo pipefail
+          tarball=yq_linux_amd64.tar.gz
+          url=https://github.com/mikefarah/yq/releases/download/${YQ_VERSION}/${tarball}
+          curl -sSfLo "$tarball" "$url"
+          echo "${YQ_SHA256}  ${tarball}" | sha256sum -c -
+          tar -xzf "$tarball" ./yq_linux_amd64
+          sudo install -m 0755 yq_linux_amd64 /usr/local/bin/yq
+          rm -f "$tarball" yq_linux_amd64
+      - name: Compare upstream Argo CD ClusterRoles vs reviewed snapshot
+        run: bash scripts/check-upstream-argo-clusterroles.sh

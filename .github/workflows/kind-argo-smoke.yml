@@ -1,0 +1,48 @@
+---
+name: Argo CD overlay smoke test (kind)
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - argo-setup/**
+      - base/argo-projects/argo-projects.yaml
+      - projects/static/**
+      - scripts/kind-argo-test.sh
+      - .github/workflows/kind-argo-smoke.yml
+  workflow_dispatch: {}
+jobs:
+  kind-smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+      - name: Install kustomize (pinned + sha256 verified)
+        env:
+          KUSTOMIZE_VERSION: v5.8.1
+          KUSTOMIZE_SHA256: 029a7f0f4e1932c52a0476cf02a0fd855c0bb85694b82c338fc648dcb53a819d
+        run: |
+          set -euo pipefail
+          tarball=kustomize_${KUSTOMIZE_VERSION}_linux_amd64.tar.gz
+          url=https://github.com/kubernetes-sigs/kustomize/releases/download/kustomize%2F${KUSTOMIZE_VERSION}/${tarball}
+          curl -sSfLo "$tarball" "$url"
+          echo "${KUSTOMIZE_SHA256}  ${tarball}" | sha256sum -c -
+          tar -xzf "$tarball" kustomize
+          sudo install -m 0755 kustomize /usr/local/bin/kustomize
+          rm -f "$tarball" kustomize
+      - uses: helm/kind-action@ef37e7f390d99f746eb8b610417061a60e82a6cc  # v1.14.0
+        with:
+          cluster_name: mip-argo-test
+          wait: 120s
+          # CLUSTER env var below ensures script reuses the cluster instead
+          # of recreating it.
+      - name: Run kind smoke test
+        env:
+          CLUSTER: mip-argo-test
+          KEEP: "1"  # let kind-action handle teardown
+        run: bash scripts/kind-argo-test.sh
+      - name: Dump pod state on failure
+        if: failure()
+        run: |
+          kubectl -n argocd-mip-team get pods -o wide || true
+          kubectl -n argocd-mip-team describe pods || true
+          kubectl -n argocd-mip-team logs --tail=200 -l app.kubernetes.io/part-of=argocd --all-containers || true

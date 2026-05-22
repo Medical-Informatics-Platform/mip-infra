@@ -1,0 +1,156 @@
+name: argocd-application-controller
+rules:
+  - apiGroups:
+      - '*'
+    resources:
+      - '*'
+    resourceNames: []
+    verbs:
+      - '*'
+    nonResourceURLs: []
+  - apiGroups: []
+    resources: []
+    resourceNames: []
+    verbs:
+      - '*'
+    nonResourceURLs:
+      - '*'
+---
+name: argocd-server
+rules:
+  - apiGroups:
+      - '*'
+    resources:
+      - '*'
+    resourceNames: []
+    verbs:
+      - delete
+      - get
+      - patch
+    nonResourceURLs: []
+  - apiGroups:
+      - ""
+    resources:
+      - events
+    resourceNames: []
+    verbs:
+      - list
+    nonResourceURLs: []
+  - apiGroups:
+      - ""
+    resources:
+      - pods
+      - pods/log
+    resourceNames: []
+    verbs:
+      - get
+    nonResourceURLs: []
+  - apiGroups:
+      - argoproj.io
+    resources:
+      - applications
+      - applicationsets
+    resourceNames: []
+    verbs:
+      - get
+      - list
+      - watch
+    nonResourceURLs: []
+  - apiGroups:
+      - batch
+    resources:
+      - jobs
+    resourceNames: []
+    verbs:
+      - create
+    nonResourceURLs: []
+  - apiGroups:
+      - argoproj.io
+    resources:
+      - workflows
+    resourceNames: []
+    verbs:
+      - create
+    nonResourceURLs: []
+---
+name: argocd-applicationset-controller
+rules:
+  - apiGroups:
+      - argoproj.io
+    resources:
+      - applications
+      - applicationsets
+      - applicationsets/finalizers
+    resourceNames: []
+    verbs:
+      - create
+      - delete
+      - get
+      - list
+      - patch
+      - update
+      - watch
+    nonResourceURLs: []
+  - apiGroups:
+      - argoproj.io
+    resources:
+      - appprojects
+    resourceNames: []
+    verbs:
+      - get
+      - list
+      - watch
+    nonResourceURLs: []
+  - apiGroups:
+      - argoproj.io
+    resources:
+      - applicationsets/status
+    resourceNames: []
+    verbs:
+      - get
+      - patch
+      - update
+    nonResourceURLs: []
+  - apiGroups:
+      - ""
+    resources:
+      - events
+    resourceNames: []
+    verbs:
+      - create
+      - get
+      - list
+      - patch
+      - watch
+    nonResourceURLs: []
+  - apiGroups:
+      - ""
+    resources:
+      - configmaps
+      - secrets
+    resourceNames: []
+    verbs:
+      - get
+      - list
+      - watch
+    nonResourceURLs: []
+  - apiGroups:
+      - coordination.k8s.io
+    resources:
+      - leases
+    resourceNames: []
+    verbs:
+      - create
+    nonResourceURLs: []
+  - apiGroups:
+      - coordination.k8s.io
+    resources:
+      - leases
+    resourceNames:
+      - 58ac56fa.applicationsets.argoproj.io
+    verbs:
+      - create
+      - get
+      - update
+    nonResourceURLs: []
+---
