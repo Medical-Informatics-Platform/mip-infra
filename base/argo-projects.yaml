@@ -9,8 +9,8 @@ metadata:
     app.kubernetes.io/managed-by: argocd
     argocd.instance: mip-team
   annotations:
-    argocd.argoproj.io/note: 'Manages static AppProjects: mip-federations,
-      mip-common, mip-monitoring, mip-security, submariner'
+    argocd.argoproj.io/note: 'Manages static AppProjects: mip-federations, mip-common,
+      mip-monitoring, mip-security, submariner'
 spec:
   generators:
     - list:
