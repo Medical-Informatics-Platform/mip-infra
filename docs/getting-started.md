@@ -46,7 +46,7 @@ kubectl create namespace "$ARGOCD_NS"
 # exceeds the 256 KiB limit for the client-side `last-applied-configuration`
 # annotation and a plain `kubectl apply` fails with
 #   metadata.annotations: Too long: may not be more than 262144 bytes
-kustomize build argo-setup/patches \
+kustomize build patches \
   | kubectl apply -n "$ARGOCD_NS" --server-side -f -
 
 kubectl -n "$ARGOCD_NS" rollout status deploy/argocd-server
