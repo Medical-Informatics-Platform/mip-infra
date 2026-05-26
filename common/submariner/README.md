@@ -12,8 +12,8 @@ This deployment uses:
 
 ## Prerequisites
 
-- Kubernetes 1.23+ (both clusters)
-- Helm 3.8+ (on nodes where deploying manually)
+- Kubernetes (both clusters)
+- Helm (on nodes where deploying manually)
 - Calico CNI with VXLAN encapsulation
 - Non-overlapping cluster CIDRs
 - LoadBalancer service support (or MetalLB) for broker cluster

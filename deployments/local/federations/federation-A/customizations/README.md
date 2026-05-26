@@ -74,7 +74,7 @@ namespace: federation-a
 # If the chart exposes these:
 exareme2:
   image:
-    tag: 0.28.0
+    tag: <correct-version>
   
 storage:
   cephfs:

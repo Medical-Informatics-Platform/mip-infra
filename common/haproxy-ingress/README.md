@@ -19,7 +19,7 @@ RBAC is defined separately in
 - A default certificate, ClusterIssuer, and ConfigMap used by the controller
 
 Current controller settings:
-- Image: `haproxytech/kubernetes-ingress:3.2.8`
+- Image: `haproxytech/kubernetes-ingress`
 - Publish service: `ingress-nginx/haproxy-public-controller`
 - Ingress class: `haproxy-public`
 - IngressClass controller string: `haproxy.org/ingress-controller/haproxy-public`
