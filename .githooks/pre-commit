@@ -21,21 +21,61 @@ CURRENT_BRANCH=$(git rev-parse --abbrev-ref HEAD)
 # ---------------------------------------------------------------------------
 RBAC_DRIFT=0
 RBAC_PROBLEMS=()
-for PROJ_FILE in projects/static/*/*.yaml; do
-  [[ -f "$PROJ_FILE" ]] || continue
-  grep -q '^kind: AppProject' "$PROJ_FILE" || continue
-  grep -q '^# rbac-lint: ignore' "$PROJ_FILE" && continue
+while IFS= read -r PROJ_FILE; do
+  [[ -n "$PROJ_FILE" ]] || continue
+  PROJ_CONTENT=$(git show ":0:$PROJ_FILE" 2>/dev/null || true)
+  [[ -n "$PROJ_CONTENT" ]] || continue
+  grep -q '^kind: AppProject' <<< "$PROJ_CONTENT" || continue
+  grep -q '^# rbac-lint: ignore' <<< "$PROJ_CONTENT" && continue
   if ! awk '
+    function clean(value) {
+      sub(/[[:space:]]+#.*$/, "", value)
+      sub(/^[[:space:]]+/, "", value)
+      sub(/[[:space:]]+$/, "", value)
+      return value
+    }
+    function commit_item() {
+      if (current_group == "rbac.authorization.k8s.io" && current_kind == "Role") {
+        has_role = 1
+      }
+      if (current_group == "rbac.authorization.k8s.io" && current_kind == "RoleBinding") {
+        has_rb = 1
+      }
+      current_group = ""
+      current_kind = ""
+    }
     /^  namespaceResourceBlacklist:/ { in_block = 1; next }
-    in_block && /^  [A-Za-z]/         { in_block = 0 }
-    in_block && /kind: Role$/         { has_role = 1 }
-    in_block && /kind: RoleBinding$/  { has_rb = 1 }
-    END { exit !(has_role && has_rb) }
-  ' "$PROJ_FILE"; then
+    in_block && /^  [A-Za-z]/ {
+      commit_item()
+      in_block = 0
+      next
+    }
+    in_block && /^    - / {
+      commit_item()
+    }
+    in_block && /group:/ {
+      current_group = $0
+      sub(/^.*group:[[:space:]]*/, "", current_group)
+      current_group = clean(current_group)
+      next
+    }
+    in_block && /kind:/ {
+      current_kind = $0
+      sub(/^.*kind:[[:space:]]*/, "", current_kind)
+      current_kind = clean(current_kind)
+      next
+    }
+    END {
+      if (in_block) {
+        commit_item()
+      }
+      exit !(has_role && has_rb)
+    }
+  ' <<< "$PROJ_CONTENT"; then
     RBAC_DRIFT=1
     RBAC_PROBLEMS+=("$PROJ_FILE")
   fi
-done
+done < <(git ls-files -- 'projects/static/*/*.yaml')
 
 if [[ "$RBAC_DRIFT" -ne 0 ]]; then
   echo "---------------------------------------------------------------------------------"
