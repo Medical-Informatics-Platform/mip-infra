@@ -10,6 +10,8 @@ on:
       - scripts/kind-argo-test.sh
       - .github/workflows/kind-argo-smoke.yml
   workflow_dispatch: {}
+permissions:
+  contents: read
 jobs:
   kind-smoke:
     runs-on: ubuntu-latest
