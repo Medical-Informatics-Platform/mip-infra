@@ -33,9 +33,10 @@ argo-setup/
     └── patch-argocd-applicationset-controller-clusterrole.yaml # empties out cluster-wide grants
 ```
 
-> ClusterRoleBindings are inherited unchanged from the upstream HA base; the
-> kustomization `namespace:` directive rewrites `subjects[].namespace` to
-> `argocd-mip-team`, so no override is needed.
+> ClusterRoleBindings are inherited from the upstream HA base, but we still patch
+> them explicitly: kustomize’s `namespace:` directive does **not** reliably
+> rewrite `subjects[].namespace` on cluster-scoped bindings coming from a remote
+> base, so we point them at `argocd-mip-team` via the `patch-argocd-*-clusterrolebinding.yaml` patches.
 >
 > See [`docs/rbac-layers.md`](../docs/rbac-layers.md) for the full RBAC &
 > privilege map across all four layers, and the open hardening TODOs.
