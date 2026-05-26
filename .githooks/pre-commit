@@ -2,7 +2,11 @@
 
 # Critical files to ALWAYS check for 'revision: main' or 'targetRevision: main'
 # when on a feature branch, regardless of whether they are staged.
-CRITICAL_FILES=("base/mip-infrastructure/mip-infrastructure.yaml")
+CRITICAL_FILES=(
+  "base/mip-infrastructure/mip-infrastructure.yaml"
+  "base/argo-projects.yaml"
+  "common/security/netpol.yaml"
+)
 
 # Get the current branch name
 CURRENT_BRANCH=$(git rev-parse --abbrev-ref HEAD)

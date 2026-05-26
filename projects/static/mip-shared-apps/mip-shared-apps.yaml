@@ -13,8 +13,6 @@ spec:
   destinations:
     - namespace: federation-*
       server: https://kubernetes.default.svc
-    - namespace: test-*
-      server: https://kubernetes.default.svc
   clusterResourceWhitelist: []
   namespaceResourceWhitelist:
     - group: argoproj.io
@@ -51,8 +49,6 @@ spec:
       kind: Job
     - group: batch
       kind: CronJob
-    - group: extensions
-      kind: Ingress
   # Explicitly blacklist sensitive resources to be future proof
   clusterResourceBlacklist:
     - group: rbac.authorization.k8s.io

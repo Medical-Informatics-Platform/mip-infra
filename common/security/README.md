@@ -60,27 +60,28 @@ Federation namespaces are **automatically discovered** from git repositories:
 
 ### **Static Configuration for Common Namespaces**
 
-Common namespaces are configured via `common-templates/values.yaml`:
+Common namespaces are configured via the `common-network-policies` ApplicationSet in `netpol.yaml`:
 
 ```yaml
-# Common namespaces that should be isolated
-commonNamespaces:
-  - mip-common-datacatalog
-  - mip-common-monitoring
-  - mip-common-security
+generators:
+  - list:
+      elements:
+        - commonNamespace: mip-common-datacatalog
+```
 
+Federation access control for those namespaces is configured via `common-templates/values.yaml`:
+
+```yaml
 # Federation access control (by TYPE, not specific namespaces)
 federationAccess:
   local:
     enabled: false  # Default: false (more secure)
     allowedCommonNamespaces:
       # - mip-common-datacatalog
-      # - mip-common-monitoring
   hybrid:
     enabled: false  # Default: false (more secure)
     allowedCommonNamespaces:
       # - mip-common-datacatalog
-      # - mip-common-monitoring
 ```
 
 ### Federation Access Control
@@ -109,8 +110,8 @@ Simply add the federation directory to the git repository:
 The ApplicationSet will **automatically discover and apply** network policies!
 
 #### **Common Namespace (Manual Configuration)**
-1. Add to `commonNamespaces` list in `common-templates/values.yaml`
-2. Optionally add to federation access lists
+1. Add the namespace to the `common-network-policies` ApplicationSet list in `common/security/netpol.yaml`
+2. Optionally add it to federation access lists in `common-templates/values.yaml`
 3. Commit and push - ArgoCD will automatically apply the policies
 
 **Example: Enable local federations to access datacatalog**:
@@ -126,7 +127,8 @@ federationAccess:
 
 You can customize the network policies by modifying:
 
-- `values.yaml` - Namespace lists and global settings
+- `netpol.yaml` - Common namespace app generation
+- `values.yaml` - Federation access and global settings
 - `templates/federation-network-policies.yaml` - Federation-specific rules
 - `templates/common-network-policies.yaml` - Common namespace rules
 

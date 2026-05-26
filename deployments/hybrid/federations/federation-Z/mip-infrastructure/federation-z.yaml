@@ -2,7 +2,7 @@
 apiVersion: argoproj.io/v1alpha1
 kind: Application
 metadata:
-  name: federation-mippublic
+  name: federation-mippublic-hybrid
   namespace: argocd-mip-team
   finalizers: [resources-finalizer.argocd.argoproj.io]
   annotations:

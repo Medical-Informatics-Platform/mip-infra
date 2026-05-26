@@ -36,7 +36,6 @@ spec:
                 - path: common/datacatalog
                 - path: common/haproxy-ingress
                 - path: common/security
-                - path: common/monitoring/eck
                 - path: common/submariner
           - list:
               elements:
