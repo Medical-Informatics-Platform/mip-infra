@@ -4,14 +4,14 @@ This readme bootstraps a **production‑ready, Highly Available** Argo CD
 instance for a small DevOps / Platform team (≈ < 100 Applications to start)
 running on a single Kubernetes cluster.
 
-> **External access:** this overlay does **not** ship an `Ingress`. We are
-> phasing out the `networking.k8s.io/Ingress` API across the platform.
-> Until a Gateway API setup is in place, expose the UI via
-> `kubectl -n argocd-mip-team port-forward svc/argocd-server 8080:443`
-> or a `Service` of `type: LoadBalancer` configured out of band.
-> The server still runs in `--insecure` mode (HTTP) so any external front
-> end is responsible for TLS termination. CLI usage:
-> `argocd login <host> --grpc-web`.
+> **External access:** this overlay ships an example `Ingress` in
+> [`patches/argocd-server-ingress.yaml`](patches/argocd-server-ingress.yaml) with
+> placeholder hostnames. Update the host/TLS secret annotations to match your
+> environment before applying. Alternatively, you can expose the UI via
+> `kubectl -n argocd-mip-team port-forward svc/argocd-server 8080:443` or a
+> `Service` of `type: LoadBalancer` configured out of band.
+> The server still runs in `--insecure` mode (HTTP) so any external front end is
+> responsible for TLS termination. CLI usage: `argocd login <host> --grpc-web`.
 
 ## Repository layout
 
