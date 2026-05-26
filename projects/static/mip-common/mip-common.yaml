@@ -5,7 +5,7 @@ metadata:
   name: mip-argo-project-common
   namespace: argocd-mip-team
 spec:
-  description: Common resources like monitoring, security, and datacatalog
+  description: Common shared resources like datacatalog and ingress
   sourceRepos:
     - https://github.com/Medical-Informatics-Platform/mip-infra.git
     - https://github.com/Medical-Informatics-Platform/datacatalog
