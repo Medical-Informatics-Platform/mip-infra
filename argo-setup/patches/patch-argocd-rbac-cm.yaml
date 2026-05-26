@@ -28,7 +28,7 @@ data:
 
   # Global policy. Per-project grants live in the AppProject `roles:`.
   # NOTE: keep this file as the single source of truth for cluster-wide grants.
-  policy.csv: |
+  policy.csv: |-
     # --- platform roles -------------------------------------------------
     p, role:platform-admin, *, *, */*, allow
     p, role:platform-operator, applications, get, */*, allow

@@ -25,7 +25,7 @@ data:
   # cycle. EndpointSlice and Endpoints are managed by kube-controller-manager
   # for every Service; coordination Leases are written constantly by every
   # leader-elected workload. Argo never reconciles these as desired state.
-  resource.exclusions: |
+  resource.exclusions: |-
     - apiGroups:
         - "discovery.k8s.io"
       kinds:

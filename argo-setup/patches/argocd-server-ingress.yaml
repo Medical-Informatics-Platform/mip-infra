@@ -18,12 +18,11 @@ metadata:
     cert-manager.io/cluster-issuer: letsencrypt
     # Force HTTP->HTTPS at Traefik.
     traefik.ingress.kubernetes.io/router.entrypoints: websecure
-    traefik.ingress.kubernetes.io/router.tls: "true"
+    traefik.ingress.kubernetes.io/router.tls: 'true'
 spec:
   ingressClassName: traefik
   tls:
-    - hosts:
-        - argocd.example.com
+    - hosts: [argocd.example.com]
       secretName: argocd-server-tls
   rules:
     - host: argocd.example.com
@@ -36,4 +35,3 @@ spec:
                 name: argocd-server
                 port:
                   name: http
-
