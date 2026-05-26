@@ -106,9 +106,8 @@ fi
 echo "OK: argocd-application-controller cannot create Webhooks"
 
 # But it MUST still be able to write Gateway API HTTPRoutes (forward-compat).
-# Note: gateway.networking.k8s.io CRDs are not installed on this kind cluster,
-# so we only check the RBAC verb resolution via SAR which doesn't require the
-# resource to exist.
+# Note: Gateway API CRDs are installed on this kind cluster so `kubectl auth can-i`
+# can resolve the resource type during SubjectAccessReview.
 if [[ "$(kubectl auth can-i create httproutes.gateway.networking.k8s.io \
            --as=system:serviceaccount:$NS:argocd-application-controller)" != "yes" ]]; then
   fail "argocd-application-controller cannot write Gateway API HTTPRoutes"
