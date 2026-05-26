@@ -22,7 +22,7 @@ argocd app sync <app-name>       # force a reconciliation
 
 ### "Permission denied" creating the infra Application
 
-The destination AppProject does not exist yet. The bootstrap is staged on purpose — see [getting-started.md §5](getting-started.md#5-bootstrap-the-appprojects).
+The destination AppProject does not exist yet. The bootstrap is staged on purpose — see [getting-started.md §4](getting-started.md#4-bootstrap-the-appprojects).
 Order is: `default` AppProject → `mip-argo-project-infrastructure` →`argo-projects` ApplicationSet → everything else.
 
 ### "Cannot delete default AppProject"
