@@ -53,7 +53,7 @@ federation gets:
 - writes restricted to `federation-<name>` (and `argocd-mip-team` for the
   wrapper App itself)
 - workload kinds allowed; cluster RBAC, CRDs, and webhooks denied
-- per-fed roles (`federation-developer`) tied to OIDC groups for UI access (not in use yet - skeleton for possible future improvment)
+- per-fed roles (`federation-developer`) tied to OIDC groups for UI access (not in use yet - skeleton for possible future improvement)
 
 Review the concrete allowlists and denylists in
 [`projects/static/`](../projects/static/) and
