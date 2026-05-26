@@ -1,4 +1,4 @@
-# Argo CD v3.1.latest – Small‑Team HA Install
+# Argo CD v3.3.9 – Small‑Team HA Install
 
 This readme bootstraps a **production‑ready, Highly Available** Argo CD
 instance for a small DevOps / Platform team (≈ < 100 Applications to start)
