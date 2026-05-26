@@ -12,46 +12,12 @@ spec:
     - https://github.com/madgik/exareme2
     - https://github.com/Medical-Informatics-Platform/mip
   destinations:
-    - namespace: federation-*
-      server: https://kubernetes.default.svc
     - namespace: argocd-mip-team
       server: https://kubernetes.default.svc
   clusterResourceWhitelist: []
   namespaceResourceWhitelist:
     - group: argoproj.io
       kind: Application
-    - group: apps
-      kind: Deployment
-    - group: apps
-      kind: StatefulSet
-    - group: apps
-      kind: DaemonSet
-    - group: apps
-      kind: ReplicaSet
-    - group: ''
-      kind: Service
-    - group: ''
-      kind: ConfigMap
-    - group: ''
-      kind: Secret
-    - group: ''
-      kind: PersistentVolumeClaim
-    - group: ''
-      kind: ServiceAccount
-    - group: ''
-      kind: Pod
-    - group: rbac.authorization.k8s.io
-      kind: Role
-    - group: rbac.authorization.k8s.io
-      kind: RoleBinding
-    - group: networking.k8s.io
-      kind: Ingress
-    - group: networking.k8s.io
-      kind: NetworkPolicy
-    - group: batch
-      kind: Job
-    - group: batch
-      kind: CronJob
   # Explicitly blacklist sensitive resources to be future proof
   clusterResourceBlacklist:
     - group: rbac.authorization.k8s.io
@@ -64,6 +30,11 @@ spec:
       kind: MutatingWebhookConfiguration
     - group: apiextensions.k8s.io
       kind: CustomResourceDefinition
+  namespaceResourceBlacklist:
+    - group: rbac.authorization.k8s.io
+      kind: Role
+    - group: rbac.authorization.k8s.io
+      kind: RoleBinding
   syncWindows:
     - kind: allow
       schedule: '* * * * *'

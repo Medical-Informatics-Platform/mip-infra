@@ -9,16 +9,14 @@ metadata:
     app.kubernetes.io/managed-by: argocd
     argocd.instance: mip-team
   annotations:
-    argocd.argoproj.io/note: 'Manages static AppProjects: mip-federations, mip-shared-apps,
-      mip-common, mip-monitoring, mip-security, submariner'
+    argocd.argoproj.io/note: 'Manages static AppProjects: mip-federations, mip-common,
+      mip-monitoring, mip-security, submariner'
 spec:
   generators:
     - list:
         elements:
           - projectName: mip-argo-project-federations
             fileName: mip-federations
-          - projectName: mip-argo-project-shared-apps
-            fileName: mip-shared-apps
           - projectName: mip-argo-project-common
             fileName: mip-common
           - projectName: mip-argo-project-monitoring

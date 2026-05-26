@@ -11,7 +11,95 @@ CRITICAL_FILES=(
 # Get the current branch name
 CURRENT_BRANCH=$(git rev-parse --abbrev-ref HEAD)
 
-# If on main branch, allow commit
+# ---------------------------------------------------------------------------
+# Drift check (runs on every branch including main): every static AppProject
+# must explicitly blacklist Role and RoleBinding via namespaceResourceBlacklist.
+# Per-federation AppProjects (rendered from projects/templates/federation/) are
+# exempt because their destinations are pinned to a single federation namespace
+# and so namespaced RBAC is in-scope. Files can opt out with the marker
+# `# rbac-lint: ignore` near the top.
+# ---------------------------------------------------------------------------
+RBAC_DRIFT=0
+RBAC_PROBLEMS=()
+while IFS= read -r PROJ_FILE; do
+  [[ -n "$PROJ_FILE" ]] || continue
+  PROJ_CONTENT=$(git show ":0:$PROJ_FILE" 2>/dev/null || true)
+  [[ -n "$PROJ_CONTENT" ]] || continue
+  grep -q '^kind: AppProject' <<< "$PROJ_CONTENT" || continue
+  grep -q '^# rbac-lint: ignore' <<< "$PROJ_CONTENT" && continue
+  if ! awk '
+    function clean(value) {
+      sub(/[[:space:]]+#.*$/, "", value)
+      sub(/^[[:space:]]+/, "", value)
+      sub(/[[:space:]]+$/, "", value)
+      return value
+    }
+    function commit_item() {
+      if (current_group == "rbac.authorization.k8s.io" && current_kind == "Role") {
+        has_role = 1
+      }
+      if (current_group == "rbac.authorization.k8s.io" && current_kind == "RoleBinding") {
+        has_rb = 1
+      }
+      current_group = ""
+      current_kind = ""
+    }
+    /^  namespaceResourceBlacklist:/ { in_block = 1; next }
+    in_block && /^  [A-Za-z]/ {
+      commit_item()
+      in_block = 0
+      next
+    }
+    in_block && /^    - / {
+      commit_item()
+    }
+    in_block && /group:/ {
+      current_group = $0
+      sub(/^.*group:[[:space:]]*/, "", current_group)
+      current_group = clean(current_group)
+      next
+    }
+    in_block && /kind:/ {
+      current_kind = $0
+      sub(/^.*kind:[[:space:]]*/, "", current_kind)
+      current_kind = clean(current_kind)
+      next
+    }
+    END {
+      if (in_block) {
+        commit_item()
+      }
+      exit !(has_role && has_rb)
+    }
+  ' <<< "$PROJ_CONTENT"; then
+    RBAC_DRIFT=1
+    RBAC_PROBLEMS+=("$PROJ_FILE")
+  fi
+done < <(git ls-files -- 'projects/static/*/*.yaml')
+
+if [[ "$RBAC_DRIFT" -ne 0 ]]; then
+  echo "---------------------------------------------------------------------------------"
+  echo "🛑 COMMIT BLOCKED: static AppProject(s) missing explicit RBAC blacklist"
+  echo ""
+  echo "Each static AppProject must declare:"
+  echo "    namespaceResourceBlacklist:"
+  echo "      - group: rbac.authorization.k8s.io"
+  echo "        kind: Role"
+  echo "      - group: rbac.authorization.k8s.io"
+  echo "        kind: RoleBinding"
+  echo ""
+  echo "If a project legitimately needs to manage namespaced RBAC, opt out by"
+  echo "adding a '# rbac-lint: ignore' comment near the top of the file."
+  echo ""
+  echo "Affected files:"
+  for F in "${RBAC_PROBLEMS[@]}"; do
+    echo "  - $F"
+  done
+  echo "---------------------------------------------------------------------------------"
+  exit 1
+fi
+
+# If on main branch, the remaining branch-pin checks don't apply.
 if [[ "$CURRENT_BRANCH" == "main" ]]; then
   exit 0
 fi

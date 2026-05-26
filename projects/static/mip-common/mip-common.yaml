@@ -44,10 +44,6 @@ spec:
       kind: ServiceAccount
     - group: ''
       kind: Pod
-    - group: rbac.authorization.k8s.io
-      kind: Role
-    - group: rbac.authorization.k8s.io
-      kind: RoleBinding
     - group: networking.k8s.io
       kind: Ingress
     - group: networking.k8s.io
@@ -76,6 +72,12 @@ spec:
       kind: MutatingWebhookConfiguration
     - group: apiextensions.k8s.io
       kind: CustomResourceDefinition
+  # RBAC is never managed by this project; make it explicit
+  namespaceResourceBlacklist:
+    - group: rbac.authorization.k8s.io
+      kind: Role
+    - group: rbac.authorization.k8s.io
+      kind: RoleBinding
   roles:
     - name: common-admin
       description: Full access to common resources
