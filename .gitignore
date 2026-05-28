@@ -1,5 +1,7 @@
 # Ignore _folders
 _*/
+argocd-remote-key
+argocd-remote-key.pub
 
 ### Helm ###
 # Chart dependencies
