@@ -1,0 +1,24 @@
+---
+# Tighten the upstream `argocd-applicationset-controller` ClusterRole.
+#
+# Why empty rules?
+#   The upstream HA install grants this controller cluster-wide read on
+#   secrets, configmaps, leases, deployments and full RW on argoproj.io
+#   resources. That is needed only when AppSet manages Applications across
+#   multiple namespaces (`application.namespaces` override). We keep every
+#   ApplicationSet and Application in `argocd-mip-team`, where the namespaced
+#   Role `argocd-applicationset-controller` (shipped by upstream and inherited
+#   unchanged) already provides every right the controller needs.
+#
+# Effect: the ClusterRoleBinding remains, but binds an empty ClusterRole, so
+# the controller has zero cluster-wide rights. If we ever enable
+# `application.namespaces`, restore the upstream rules here.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: argocd-applicationset-controller
+  labels:
+    app.kubernetes.io/component: applicationset-controller
+    app.kubernetes.io/name: argocd-applicationset-controller
+    app.kubernetes.io/part-of: argocd
+rules: []

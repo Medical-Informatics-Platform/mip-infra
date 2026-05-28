@@ -2,19 +2,61 @@
 apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
 namespace: argocd-mip-team
-# Base: upstream HA manifest (resolved tag)
+# Base: upstream HA manifest (resolved tag).
+# Bump policy: pin to a specific tag, manage upgrades via Renovate / manual PR.
 resources:
-  - https://raw.githubusercontent.com/argoproj/argo-cd/v3.1.12/manifests/ha/install.yaml
-  - patch-argocd-ingress.yaml
-patchesStrategicMerge:
-  - patch-argocd-application-controller-clusterrole.yaml
-  - patch-argocd-application-controller-clusterrolebinding.yaml
-  - patch-argocd-application-controller-resources.yaml
-  - patch-argocd-repo-server-resources.yaml
-  - patch-argocd-server-resources.yaml
-  - patch-argocd-dex-server-resources.yaml
-  - patch-argocd-redis-ha-statefulset.yaml
-  - patch-argocd-cmd-params-cm.yaml
-  - patch-argocd-cm.yaml
-  - patch-argocd-server-extra-read.yaml
-  - patch-argocd-server-clusterrolebinding.yaml
+  - https://raw.githubusercontent.com/argoproj/argo-cd/v3.3.9/manifests/ha/install.yaml
+  - poddisruptionbudgets.yaml
+  - argocd-server-ingress.yaml
+# Strategic-merge / JSON patches on top of the upstream base.
+#
+# IMPORTANT — ClusterRole semantics:
+#   The two ClusterRole patches below FULLY REPLACE the `rules` array of the
+#   upstream ClusterRoles (`argocd-application-controller`, `argocd-server`).
+#   Strategic merge cannot deep-merge a list of rules without merge keys, and
+#   we want to *tighten* upstream (e.g. restrict pods to delete-only). When
+#   bumping the upstream tag, manually diff:
+#     curl -sL https://raw.githubusercontent.com/argoproj/argo-cd/<TAG>/manifests/ha/install.yaml \
+#       | yq 'select(.kind=="ClusterRole" and (.metadata.name | test("argocd-(application-controller|server)$")))'
+#   against patch-argocd-application-controller-clusterrole.yaml and
+#   patch-argocd-server-clusterrole.yaml, and reconcile.
+patches:
+  # Resource sizing
+  - path: patch-argocd-application-controller-resources.yaml
+  - path: patch-argocd-repo-server-resources.yaml
+  - path: patch-argocd-server-resources.yaml
+  - path: patch-argocd-dex-server-resources.yaml
+  - path: patch-argocd-redis-ha-statefulset.yaml
+  # Argo CD config
+  - path: patch-argocd-cmd-params-cm.yaml
+  - path: patch-argocd-cm.yaml
+  - path: patch-argocd-rbac-cm.yaml
+  # ClusterRoles (full replace of upstream rules — see note above).
+  - path: patch-argocd-application-controller-clusterrole.yaml
+  - path: patch-argocd-server-clusterrole.yaml
+  - path: patch-argocd-applicationset-controller-clusterrole.yaml
+  # ClusterRoleBindings — kustomize's `namespace:` directive does NOT rewrite
+  # `subjects[].namespace` on bindings inherited from a remote base, so we
+  # patch them explicitly to point at our `argocd-mip-team` namespace.
+  - path: patch-argocd-application-controller-clusterrolebinding.yaml
+  - path: patch-argocd-server-clusterrolebinding.yaml
+  - path: patch-argocd-applicationset-controller-clusterrolebinding.yaml
+  # seccompProfile: RuntimeDefault on every Argo CD workload (PSS-restricted).
+  # Two-shape patch: redis-ha-{server,haproxy} already set fsGroup/runAsUser
+  # in pod securityContext, so we only add the seccompProfile child key.
+  # The other workloads have no pod-level securityContext upstream, so we set
+  # the whole map.
+  - target:
+      kind: (Deployment|StatefulSet)
+      name: argocd-redis-ha-.*
+    patch: |
+      - op: add
+        path: /spec/template/spec/securityContext/seccompProfile
+        value: {type: RuntimeDefault}
+  - target:
+      kind: (Deployment|StatefulSet)
+      name: argocd-(application-controller|server|repo-server|dex-server|applicationset-controller)
+    patch: |-
+      - op: add
+        path: /spec/template/spec/securityContext
+        value: {seccompProfile: {type: RuntimeDefault}}

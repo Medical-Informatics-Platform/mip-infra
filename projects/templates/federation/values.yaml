@@ -44,6 +44,21 @@ resources:
       kind: Ingress
     - group: networking.k8s.io
       kind: NetworkPolicy
+    # Gateway API — forward-compat with HAProxy switching from Ingress.
+    - group: gateway.networking.k8s.io
+      kind: Gateway
+    - group: gateway.networking.k8s.io
+      kind: HTTPRoute
+    - group: gateway.networking.k8s.io
+      kind: GRPCRoute
+    - group: gateway.networking.k8s.io
+      kind: TLSRoute
+    - group: gateway.networking.k8s.io
+      kind: TCPRoute
+    - group: gateway.networking.k8s.io
+      kind: UDPRoute
+    - group: gateway.networking.k8s.io
+      kind: ReferenceGrant
     - group: batch
       kind: Job
     - group: batch

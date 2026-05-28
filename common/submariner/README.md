@@ -12,8 +12,8 @@ This deployment uses:
 
 ## Prerequisites
 
-- Kubernetes 1.23+ (both clusters)
-- Helm 3.8+ (on nodes where deploying manually)
+- Kubernetes (both clusters)
+- Helm (on nodes where deploying manually)
 - Calico CNI with VXLAN encapsulation
 - Non-overlapping cluster CIDRs
 - LoadBalancer service support (or MetalLB) for broker cluster
@@ -52,6 +52,26 @@ Update these values in `deployments/hybrid/federations/federation-Z/remote-node/
 ### 3. Deploy to Remote Cluster
 
 See `../../deployments/hybrid/federations/federation-Z/remote-node/README.md`
+
+## Delete behavior
+
+The child Argo CD Applications in [common/submariner/submariner.yaml](submariner.yaml)
+intentionally do not use `resources-finalizer.argocd.argoproj.io`.
+
+Why:
+- The `submariner-operator` Application manages both the operator Deployment and a live `Submariner` custom resource.
+- A cascading Application delete tears down the controller and the controller-owned custom resource in the same operation.
+- In practice, that can deadlock deletion: the `Submariner` resource is left waiting on its own cleanup finalizers after the operator is already being removed.
+
+Consequence:
+- Deleting the child Application removes the Argo CD Application object only.
+- The deployed Submariner resources stay in the cluster.
+- The parent App-of-Apps can recreate the child Application cleanly.
+
+For a real uninstall, do it in controller order:
+- delete the `Submariner` custom resource first and wait for its cleanup to complete
+- then remove the operator workload
+- then remove the broker workload if needed
 
 ## Configuration
 

@@ -1,0 +1,44 @@
+---
+# /argo-setup/patches/patch-argocd-rbac-cm.yaml
+#
+# Argo CD UI / API / CLI authorization (Layer 3 in docs/rbac-layers.md).
+#
+# Subjects come from OIDC groups (when SSO is configured) or from local
+# accounts created in argocd-cm. The built-in `admin` user bypasses this
+# policy and should be disabled once SSO is wired up
+# (set `admin.enabled: "false"` in argocd-cm).
+#
+# Project-scoped policies (e.g. `<project>-admin`, `<project>-operator`)
+# are declared in each AppProject under `roles:` — keep this file for the
+# *global* policy only.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: argocd-rbac-cm
+  labels:
+    app.kubernetes.io/name: argocd-rbac-cm
+    app.kubernetes.io/part-of: argocd
+data:
+  # Default role for any authenticated user with no explicit grant.
+  # `role:readonly` lets them see resources; switch to "" for fully closed.
+  policy.default: role:readonly
+
+  # Tokens carry these scopes; `groups` is the OIDC claim we map from.
+  scopes: '[groups, email]'
+
+  # Global policy. Per-project grants live in the AppProject `roles:`.
+  # NOTE: keep this file as the single source of truth for cluster-wide grants.
+  policy.csv: |-
+    # --- platform roles -------------------------------------------------
+    p, role:platform-admin, *, *, */*, allow
+    p, role:platform-operator, applications, get, */*, allow
+    p, role:platform-operator, applications, sync, */*, allow
+    p, role:platform-operator, applications, action/*, */*, allow
+    p, role:platform-operator, logs, get, */*, allow
+    p, role:platform-operator, exec, create, */*, deny
+
+    # --- group → role mappings (OIDC groups) ----------------------------
+    # Replace these group names with the actual OIDC group claims used by
+    # your IdP. Keep platform-admin tightly scoped.
+    g, argocd-admins, role:platform-admin
+    g, argocd-operators, role:platform-operator

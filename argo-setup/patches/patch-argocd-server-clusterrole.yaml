@@ -8,13 +8,18 @@ metadata:
     app.kubernetes.io/name: argocd-server
     app.kubernetes.io/part-of: argocd
 rules:
-  # Core Kubernetes resources ArgoCD server needs to read
+  # Core Kubernetes resources the UI/API needs to read cluster-wide.
+  # Secrets are intentionally NOT here: argocd-server already has full secret
+  # access in its own namespace (argocd-mip-team) via the upstream Role; this
+  # cluster-wide grant only enables viewing secret manifests of *other*
+  # namespaces from the UI, which is an unnecessary blast-radius increase.
+  # If users complain about "View Manifest" being empty for Secret kinds in
+  # synced apps, that is the expected, intentional behaviour.
   - apiGroups: ['']
     resources:
       - events
       - namespaces
       - configmaps
-      - secrets
       - services
       - persistentvolumeclaims
     verbs:
@@ -60,6 +65,24 @@ rules:
   - apiGroups: [networking.k8s.io]
     resources: [networkpolicies, ingresses, ingressclasses]
     verbs: [get, list, watch, delete, patch]
+  # Read-only on cert-manager ClusterIssuers for the UI; writes belong to the
+  # application-controller, not the server.
   - apiGroups: [cert-manager.io]
     resources: [clusterissuers]
-    verbs: [create, delete, patch, update]
+    verbs: [get, list, watch]
+  # Read-only on Elastic Cloud on Kubernetes (ECK) custom resources so the
+  # UI can render the resource tree and "View Manifest" tabs without
+  # crashing on 403s. Writes are handled by the application-controller.
+  - apiGroups:
+      - elasticsearch.k8s.elastic.co
+      - kibana.k8s.elastic.co
+      - beat.k8s.elastic.co
+      - apm.k8s.elastic.co
+      - enterprisesearch.k8s.elastic.co
+      - maps.k8s.elastic.co
+      - agent.k8s.elastic.co
+      - autoscaling.k8s.elastic.co
+      - logstash.k8s.elastic.co
+      - stackconfigpolicy.k8s.elastic.co
+    resources: ['*']
+    verbs: [get, list, watch]

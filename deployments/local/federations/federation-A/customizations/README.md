@@ -69,12 +69,6 @@ Override Helm chart values exposed by the upstream chart:
 ```yaml
 ---
 log_level: DEBUG
-namespace: federation-a
-
-# If the chart exposes these:
-exareme2:
-  image:
-    tag: 0.28.0
   
 storage:
   cephfs:
