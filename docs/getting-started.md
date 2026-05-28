@@ -173,18 +173,11 @@ metadata:
   name: mip-secret
   namespace: federation-<X>
 type: Opaque
-data:
-  gateway-db.DB_ADMIN_USER:        <unique-per-fed>
-  gateway-db.DB_ADMIN_PASSWORD:    <unique-per-fed>
-  portalbackend-db.DB_ADMIN_USER:  <unique-per-fed>
-  portalbackend-db.DB_ADMIN_PASSWORD: <unique-per-fed>
-  portalbackend-db.PORTAL_DB_USER: <unique-per-fed>
-  portalbackend-db.PORTAL_DB_PASSWORD: <unique-per-fed>
-  # Deprecated — kept for compatibility:
-  keycloak-db.POSTGRES_USER:       <deprecated>
-  keycloak-db.POSTGRES_PASSWORD:   <deprecated>
-  keycloak.KEYCLOAK_USER:          <deprecated>
-  keycloak.KEYCLOAK_PASSWORD:      <deprecated>
+stringData:
+  platform-backend-db.DB_ADMIN_USER:     <unique-per-fed>
+  platform-backend-db.DB_ADMIN_PASSWORD: <unique-per-fed>
+  platform-backend-db.PLATFORM_DB_USER:     <unique-per-fed>
+  platform-backend-db.PLATFORM_DB_PASSWORD: <unique-per-fed>
 ```
 
 ### Generate them safely
