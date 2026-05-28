@@ -29,6 +29,17 @@ spec:
             operator: Exists
         containers:
           - name: filebeat
+            securityContext:
+              # Beats need to read root-owned host log files (/var/log/containers,
+              # /var/lib/docker/containers). Running as UID 0 with all caps
+              # dropped except DAC_READ_SEARCH (bypass DAC for read) and
+              # privilege-escalation off keeps us within PSA `baseline`.
+              # TODO: revisit non-root run with fsGroup + DAC_READ_SEARCH only.
+              runAsUser: 0
+              allowPrivilegeEscalation: false
+              capabilities:
+                drop: [ALL]
+                add: [DAC_READ_SEARCH]
             env:
               - name: NODE_NAME
                 valueFrom:

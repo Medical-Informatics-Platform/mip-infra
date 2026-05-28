@@ -56,6 +56,9 @@ spec:
       kind: '*'
     - group: autoscaling.k8s.elastic.co
       kind: '*'
+  clusterResourceWhitelist:
+    - group: ''
+      kind: Namespace
   # Explicitly blacklist sensitive resources to be future proof
   clusterResourceBlacklist:
     - group: rbac.authorization.k8s.io

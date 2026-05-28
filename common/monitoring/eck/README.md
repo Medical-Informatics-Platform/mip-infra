@@ -1,6 +1,6 @@
 # ECK Helm Chart for RKE2
 
-This directory contains the ECK Helm chart. It targets managed RKE2 clusters where the Elastic Cloud on Kubernetes (ECK) operator already runs (Rancher installs it under `kube-system`). By default the chart provisions:
+This directory contains the ECK Helm chart. It targets managed RKE2 clusters where the Elastic Cloud on Kubernetes (ECK) operator already runs (Rancher installs it under `kube-system`); our resources are deployed in their own `elastic-system` namespace per platform policy. By default the chart provisions:
 
 - A single-node Elasticsearch cluster plus Kibana.
 
@@ -16,7 +16,7 @@ Optional components (disabled by default):
 - ECK operator 2.13+ running cluster-wide.
   > **Note regarding the ECK Operator**: This chart does **not** install the operator because doing so requires cluster-admin privileges that shouldn't be granted to this standard monitoring deployment. If your hosting provider (like Rancher) already provides it, you are good to go. Otherwise, you must install the `common/elastic-operator` chart and its privileged namespace manually or include it in your infrastructure overlays before deploying this monitoring stack.
 - Default StorageClass compatible with the sample workloads (defaults assume `ceph-corbo-cephfs`).
-- Namespace prepared for Beats hostPath mounts (needed only if Beats are enabled and Pod Security Admission is enforced):
+- Namespace prepared for Beats hostPath mounts (needed only if Beats are enabled and Pod Security Admission is enforced). Argo-managed installs via `common/monitoring/eck-stack.yaml` apply these labels automatically. For direct Helm installs, prepare the namespace manually:
 
   ```bash
   kubectl create namespace elastic-system

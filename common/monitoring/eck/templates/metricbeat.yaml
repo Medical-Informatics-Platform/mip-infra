@@ -29,6 +29,15 @@ spec:
             operator: Exists
         containers:
           - name: metricbeat
+            securityContext:
+              # Metricbeat reads /hostfs/proc, /hostfs/sys, /hostfs/var.
+              # Same posture as filebeat: UID 0, all caps dropped, no escalation.
+              # TODO: revisit non-root run with fsGroup + DAC_READ_SEARCH only.
+              runAsUser: 0
+              allowPrivilegeEscalation: false
+              capabilities:
+                drop: [ALL]
+                add: [DAC_READ_SEARCH]
             env:
               - name: NODE_NAME
                 valueFrom:
