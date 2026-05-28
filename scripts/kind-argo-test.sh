@@ -199,37 +199,37 @@ step "Verify NetworkPolicy actually blocks unauthorized traffic"
 # not be able to reach port 8081. kindnet (the default kind CNI) enforces
 # NetworkPolicies natively as of v1.4+ shipped with kindest/node:v1.32+.
 NETPOL_TEST_NS=netpol-probe
+ALLOWLISTED_PROBE=allowlisted-probe
 kubectl create namespace "$NETPOL_TEST_NS" --dry-run=client -o yaml | kubectl apply -f -
 kubectl -n "$NETPOL_TEST_NS" run probe \
   --image=curlimages/curl:8.10.1 \
   --restart=Never --command -- sleep 600 >/dev/null
 kubectl -n "$NETPOL_TEST_NS" wait pod/probe --for=condition=Ready --timeout=120s
+kubectl -n "$NS" run "$ALLOWLISTED_PROBE" \
+  --labels='app.kubernetes.io/name=argocd-server' \
+  --image=curlimages/curl:8.10.1 \
+  --restart=Never --command -- sleep 600 >/dev/null
+kubectl -n "$NS" wait pod/"$ALLOWLISTED_PROBE" --for=condition=Ready --timeout=120s
 
-# Negative: probe pod in another namespace, no matching labels — must be blocked.
+# Negative: probe pod in another namespace, no matching labels — TCP connect
+# to repo-server:8081 must fail.
 if kubectl -n "$NETPOL_TEST_NS" exec probe -- \
-     curl --max-time 5 -fsS \
-     "http://argocd-repo-server.${NS}.svc.cluster.local:8081/" \
+     nc -z -w 5 "argocd-repo-server.${NS}.svc.cluster.local" 8081 \
      >/dev/null 2>&1; then
   fail "NetworkPolicy did not block cross-namespace ingress to argocd-repo-server:8081"
 fi
 echo "OK: argocd-repo-server:8081 is blocked from unauthorized pod"
 
-# Positive: argocd-server pod's selector matches the netpol's allowlist for
-# repo-server, so traffic from inside the argocd-server pod must succeed.
-SERVER_POD=$(kubectl -n "$NS" get pods -l app.kubernetes.io/name=argocd-server \
-               -o jsonpath='{.items[0].metadata.name}')
-if ! kubectl -n "$NS" exec "$SERVER_POD" -- \
-       /usr/bin/wget -q --timeout=5 --spider \
-       "http://argocd-repo-server:8081/" >/dev/null 2>&1; then
-  # 8081 speaks gRPC, wget --spider may 4xx but the TCP connection itself
-  # is what we're asserting — distinguish "blocked" from "got reply".
-  rc=$?
-  if [[ "$rc" -ge 4 ]]; then
-    fail "argocd-server pod cannot reach argocd-repo-server:8081 (netpol too tight?)"
-  fi
+# Positive: a pod carrying the argocd-server label matches the repo-server
+# allowlist, so a plain TCP connect to 8081 must succeed.
+if ! kubectl -n "$NS" exec "$ALLOWLISTED_PROBE" -- \
+       nc -z -w 5 "argocd-repo-server.${NS}.svc.cluster.local" 8081 \
+       >/dev/null 2>&1; then
+  fail "Allowlisted pod cannot reach argocd-repo-server:8081 (netpol too tight?)"
 fi
-echo "OK: argocd-server can reach argocd-repo-server:8081 (allowlisted)"
+echo "OK: allowlisted pod can reach argocd-repo-server:8081"
 
+kubectl -n "$NS" delete pod "$ALLOWLISTED_PROBE" --wait=false >/dev/null 2>&1 || true
 kubectl delete namespace "$NETPOL_TEST_NS" --wait=false >/dev/null 2>&1 || true
 
 step "All checks passed"
