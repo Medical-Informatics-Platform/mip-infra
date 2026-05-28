@@ -12,9 +12,13 @@ rules:
     verbs: [get, list, watch]
 
   # Rule 2: Write access for managed resources
-  - apiGroups: [admissionregistration.k8s.io]
-    resources: [mutatingadmissionwebhooks, validatingadmissionwebhooks]
-    verbs: [create, delete, patch, update]
+  #
+  # Note: admissionregistration.k8s.io (Mutating/ValidatingWebhookConfiguration)
+  # is intentionally NOT granted here. Every static AppProject blacklists
+  # webhooks at Layer 2, so the controller has no project that would let it
+  # sync them. If a future chart needs to manage admission webhooks, add the
+  # kind to the relevant AppProject's clusterResourceWhitelist *and* add the
+  # write rule back here in the same PR — both layers must agree.
   - apiGroups: [apiextensions.k8s.io]
     resources: [customresourcedefinitions]
     verbs: [create, delete, patch, update]
@@ -30,15 +34,26 @@ rules:
   - apiGroups: [cert-manager.io]
     resources: [certificates, clusterissuers, issuers]
     verbs: [create, delete, patch, update]
-  - apiGroups: [extensions]
-    resources: [ingresses]
-    verbs: [create, delete, patch, update]
   - apiGroups: [monitoring.coreos.com]
     resources: [prometheusrules, servicemonitors]
     verbs: [create, delete, patch, update]
   - apiGroups: [networking.k8s.io]
     resources: [ingresses, networkpolicies, ingressclasses]
     verbs: [get, list, watch, create, update, patch, delete]
+  # Gateway API — equivalent of Ingress, written to alongside Ingress so we
+  # are forward-compatible the day HAProxy (or any other controller) switches
+  # over. GatewayClass is cluster-scoped, equivalent of IngressClass.
+  - apiGroups: [gateway.networking.k8s.io]
+    resources:
+      - gateways
+      - gatewayclasses
+      - httproutes
+      - grpcroutes
+      - tlsroutes
+      - tcproutes
+      - udproutes
+      - referencegrants
+    verbs: [create, delete, patch, update]
   - apiGroups: ['']
     resources:
       - configmaps
@@ -52,9 +67,10 @@ rules:
   # Rule 3: Special case for deleting pods
   # Argo CD needs permission to delete pods for certain sync strategies (e.g., recreate)
   # and to allow users to manually terminate pods from the UI.
+  # No standalone Pods are managed in-repo; restrict to delete only.
   - apiGroups: ['']
     resources: [pods]
-    verbs: [create, delete, patch, update]  # in the future, only delete but at the moment we still have standalone pods
+    verbs: [delete]
 
   # Rule 4: Submariner requirements
   # The controller needs these permissions to grant them to Submariner components

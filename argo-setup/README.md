@@ -1,6 +1,17 @@
-# Argo CD v3.1.latest – Small‑Team HA Install (TLS at Ingress)
+# Argo CD v3.3.9 – Small‑Team HA Install
 
-This readme bootstraps a **production‑ready, Highly Available** Argo CD instance for a small DevOps / Platform team (≈ < 100 Applications to start) running on a single Kubernetes cluster, with **TLS terminated at the ingress** and **Argo CD CLI access via `--grpc-web` (no `--insecure`flags).**
+This readme bootstraps a **production‑ready, Highly Available** Argo CD
+instance for a small DevOps / Platform team (≈ < 100 Applications to start)
+running on a single Kubernetes cluster.
+
+> **External access:** this overlay ships an example `Ingress` in
+> [`patches/argocd-server-ingress.yaml`](patches/argocd-server-ingress.yaml) with
+> placeholder hostnames. Update the host/TLS secret annotations to match your
+> environment before applying. Alternatively, you can expose the UI via
+> `kubectl -n argocd-mip-team port-forward svc/argocd-server 8080:443` or a
+> `Service` of `type: LoadBalancer` configured out of band.
+> The server still runs in `--insecure` mode (HTTP) so any external front end is
+> responsible for TLS termination. CLI usage: `argocd login <host> --grpc-web`.
 
 ## Repository layout
 
@@ -14,10 +25,21 @@ argo-setup/
     ├── patch-argocd-server-resources.yaml
     ├── patch-argocd-dex-server-resources.yaml
     ├── patch-argocd-redis-ha-statefulset.yaml
-    ├── patch-argocd-ingress.yaml
-    ├── patch-argocd-cmd-params-cm.yaml 
-    └── patch-argocd-cm.yaml
+    ├── patch-argocd-cmd-params-cm.yaml
+    ├── patch-argocd-cm.yaml
+    ├── patch-argocd-rbac-cm.yaml                              # UI/API authorization (Layer 3)
+    ├── patch-argocd-application-controller-clusterrole.yaml   # full-replace of upstream rules
+    ├── patch-argocd-server-clusterrole.yaml                   # full-replace of upstream rules
+    └── patch-argocd-applicationset-controller-clusterrole.yaml # empties out cluster-wide grants
 ```
+
+> ClusterRoleBindings are inherited from the upstream HA base, but we still patch
+> them explicitly: kustomize’s `namespace:` directive does **not** reliably
+> rewrite `subjects[].namespace` on cluster-scoped bindings coming from a remote
+> base, so we point them at `argocd-mip-team` via the `patch-argocd-*-clusterrolebinding.yaml` patches.
+>
+> See [`docs/rbac-layers.md`](../docs/rbac-layers.md) for the full RBAC &
+> privilege map across all four layers, and the open hardening TODOs.
 
 ## Versioning strategy
 
@@ -28,10 +50,10 @@ Pin that value in your overlays (below) when promoting to prod.
 ## Prerequisites
 
 - Kubernetes cluster with ≥ 3 worker nodes (for HA anti‑affinity)
-- Ingress‑NGINX + cert‑manager with a ClusterIssuer named `letsencrypt-prod`
-- DNS A/AAAA for `argocd.example.com` → ingress
 - `kubectl` v1.27+ and `kustomize` (stand‑alone or `kubectl kustomize`)
-- Argo CD CLI installed locally.
+- Argo CD CLI installed locally
+- A way to reach the cluster API (port-forward, bastion, VPN) — no Ingress
+  is shipped here; see the note at the top of this file.
 
 ## Quick start
 
@@ -40,13 +62,6 @@ Pin that value in your overlays (below) when promoting to prod.
 ```
 # 0. Vars
 ARGOCD_NS=argocd-mip-team
-ARGOCD_HOST=argocd.example.com #YOUR SUBDOMAIN HERE
-# Replace placeholder hostname in all patch files
-cd argo-setup
-# BSD-Style
-LC_ALL=C find . -type f -not -path '*/.git/*' -exec sed -i '' "s/argocd.example.com/$ARGOCD_HOST/g" {} +
-# GNU-Style
-LC_ALL=C find . -type f -not -path '*/.git/*' -exec sed -i "s/argocd.example.com/$ARGOCD_HOST/g" {} +
 
 # Resolve latest 3.0 version (or pin to specific version)
 export ARGOCD_SERIES=v3.0
@@ -70,7 +85,7 @@ kubectl create namespace $ARGOCD_NS
 kubectl apply -n $ARGOCD_NS -f \
   https://raw.githubusercontent.com/argoproj/argo-cd/${ARGOCD_VER}/manifests/ha/install.yaml
 
-# 3. Apply our overlay (resources doubled, ingress, cmd params, cm settings)
+# 3. Apply our overlay (resource limits, RBAC tightening, CM/RBAC-CM settings)
 kustomize build patches | kubectl apply -f -
 
 # 4. Wait for pods
@@ -109,26 +124,10 @@ The overlay adjusts **only what we need**: resources limitations, HA replica cou
 
 ### patches/kustomization.yaml
 
-```
-apiVersion: kustomize.config.k8s.io/v1beta1
-kind: Kustomization
-
-namespace: argocd-mip-team
-
-# Base: upstream HA manifest (resolved tag)
-resources:
-  - https://raw.githubusercontent.com/argoproj/argo-cd/v3.1.12/manifests/ha/install.yaml
-
-patchesStrategicMerge:
-  - patch-argocd-application-controller-resources.yaml
-  - patch-argocd-repo-server-resources.yaml
-  - patch-argocd-server-resources.yaml
-  - patch-argocd-dex-server-resources.yaml
-  - patch-argocd-redis-ha-statefulset.yaml
-  - patch-argocd-ingress.yaml
-  - patch-argocd-cmd-params-cm.yaml
-  - patch-argocd-cm.yaml
-```
+See the live file in [`patches/kustomization.yaml`](patches/kustomization.yaml)
+— the canonical list of patches lives there, not duplicated here.
+The overlay uses the modern `patches:` field (not the deprecated
+`patchesStrategicMerge`).
 
 **Apply once:**
 
@@ -155,6 +154,15 @@ We set several global behaviors in `patch-argocd-cm.yaml`:
 | `application.resourceTrackingMethod` | `label`                       | Track managed resources by label; helps with pruning & external tooling. |
 | `application.instanceLabelKey`       | `argocd.argoproj.io/instance` | Override default instance label key; matches our team label convention.  |
 | `installationID`                     | `mip-team-argo-cd`            | Unique install identifier (multi‑cluster analytics, logs).              |
+
+## Bootstrap secrets
+
+The upstream HA install ships an `argocd-secret` skeleton that needs to be
+populated with at minimum the server signing key, and (when SSO is wired up)
+the Dex / OIDC client secret. Use [`scripts/gen_secrets.sh`](../scripts/gen_secrets.sh)
+to generate the values, then apply via your secret-management workflow
+(SOPS / sealed-secrets / external-secrets) — do **not** check the populated
+`argocd-secret` into git.
 
 ## Post-install checks
 

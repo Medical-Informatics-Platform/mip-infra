@@ -1,0 +1,79 @@
+---
+# PodDisruptionBudgets for the HA Argo CD components.
+#
+# The upstream HA install ships pod anti-affinity but no PDBs, which means a
+# voluntary disruption (e.g. node drain) can take down all replicas at once.
+# We add minimal PDBs so cordoning a node, k8s upgrades or autoscaler events
+# never reduce capacity below a usable level.
+#
+# Sizing rationale (matches replica counts in our resource patches):
+#   - argocd-application-controller (StatefulSet, replicas=2): minAvailable=1
+#   - argocd-server                 (Deployment,  replicas=2): minAvailable=1
+#   - argocd-repo-server            (Deployment,  replicas=2): minAvailable=1
+#   - argocd-dex-server             (Deployment,  replicas=2): minAvailable=1
+#   - argocd-redis-ha-haproxy       (Deployment,  replicas=3): minAvailable=2
+#   - argocd-redis-ha-server        (StatefulSet, replicas=3): minAvailable=2
+#                                                              (redis quorum)
+#
+# Single-replica components (applicationset-controller, notifications-controller)
+# have no PDB on purpose: they are not HA today, so a PDB with minAvailable=1
+# would block every node drain.
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: argocd-application-controller
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: argocd-application-controller
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: argocd-server
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: argocd-server
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: argocd-repo-server
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: argocd-repo-server
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: argocd-dex-server
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: argocd-dex-server
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: argocd-redis-ha-haproxy
+spec:
+  minAvailable: 2
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: argocd-redis-ha-haproxy
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: argocd-redis-ha-server
+spec:
+  minAvailable: 2
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: argocd-redis-ha

@@ -9,7 +9,38 @@ metadata:
 data:
   url: https://argocd.example.com
   application.resourceTrackingMethod: label
+  # Custom instance label key avoids collisions with the standard
+  # `app.kubernetes.io/instance` label that many Helm charts already stamp
+  # on resources for their own purposes.
   application.instanceLabelKey: argocd.argoproj.io/instanceTracking
   installationID: mip-team-argo-cd
   resource.respectRBAC: normal
   kustomize.buildOptions: --enable-helm
+
+  # Reconciliation tuning (defaults: 180s timeout, 0 jitter).
+  # Keep at upstream default; revisit if controller CPU is high or apps lag.
+  timeout.reconciliation: 180s
+
+  # Skip noisy / high-churn kinds that Argo would otherwise diff on every
+  # cycle. EndpointSlice and Endpoints are managed by kube-controller-manager
+  # for every Service; coordination Leases are written constantly by every
+  # leader-elected workload. Argo never reconciles these as desired state.
+  resource.exclusions: |-
+    - apiGroups:
+        - "discovery.k8s.io"
+      kinds:
+        - "EndpointSlice"
+      clusters:
+        - "*"
+    - apiGroups:
+        - ""
+      kinds:
+        - "Endpoints"
+      clusters:
+        - "*"
+    - apiGroups:
+        - "coordination.k8s.io"
+      kinds:
+        - "Lease"
+      clusters:
+        - "*"

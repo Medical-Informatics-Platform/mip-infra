@@ -1,0 +1,115 @@
+---
+name: argocd-application-controller
+rules:
+  - apiGroups: ['']
+    resources: [configmaps, secrets]
+    resourceNames: []
+    verbs: [get, list, watch]
+  - apiGroups: [argoproj.io]
+    resources: [applications, applicationsets, appprojects]
+    resourceNames: []
+    verbs: [create, delete, get, list, patch, update, watch]
+  - apiGroups: ['']
+    resources: [events]
+    resourceNames: []
+    verbs: [create, list]
+  - apiGroups: [apps]
+    resources: [deployments]
+    resourceNames: []
+    verbs: [get, list, watch]
+---
+name: argocd-applicationset-controller
+rules:
+  - apiGroups: [argoproj.io]
+    resources: [applications, applicationsets, applicationsets/finalizers]
+    resourceNames: []
+    verbs: [create, delete, get, list, patch, update, watch]
+  - apiGroups: [argoproj.io]
+    resources: [appprojects]
+    resourceNames: []
+    verbs: [get, list, watch]
+  - apiGroups: [argoproj.io]
+    resources: [applicationsets/status]
+    resourceNames: []
+    verbs: [get, patch, update]
+  - apiGroups: ['']
+    resources: [events]
+    resourceNames: []
+    verbs: [create, get, list, patch, watch]
+  - apiGroups: ['']
+    resources: [configmaps, secrets]
+    resourceNames: []
+    verbs: [get, list, watch]
+  - apiGroups: [coordination.k8s.io]
+    resources: [leases]
+    resourceNames: []
+    verbs: [create]
+  - apiGroups: [coordination.k8s.io]
+    resources: [leases]
+    resourceNames: [58ac56fa.applicationsets.argoproj.io]
+    verbs: [create, get, update]
+---
+name: argocd-dex-server
+rules:
+  - apiGroups: ['']
+    resources: [configmaps, secrets]
+    resourceNames: []
+    verbs: [get, list, watch]
+---
+name: argocd-notifications-controller
+rules:
+  - apiGroups: [argoproj.io]
+    resources: [applications, appprojects]
+    resourceNames: []
+    verbs: [get, list, patch, update, watch]
+  - apiGroups: ['']
+    resources: [configmaps, secrets]
+    resourceNames: []
+    verbs: [list, watch]
+  - apiGroups: ['']
+    resources: [configmaps]
+    resourceNames: [argocd-notifications-cm]
+    verbs: [get]
+  - apiGroups: ['']
+    resources: [secrets]
+    resourceNames: [argocd-notifications-secret]
+    verbs: [get]
+---
+name: argocd-redis-ha
+rules:
+  - apiGroups: ['']
+    resources: [endpoints]
+    resourceNames: []
+    verbs: [get]
+---
+name: argocd-redis-ha-haproxy
+rules:
+  - apiGroups: ['']
+    resources: [secrets]
+    resourceNames: []
+    verbs: [create]
+  - apiGroups: ['']
+    resources: [secrets]
+    resourceNames: [argocd-redis]
+    verbs: [get]
+  - apiGroups: ['']
+    resources: [endpoints]
+    resourceNames: []
+    verbs: [get]
+---
+name: argocd-server
+rules:
+  - apiGroups: ['']
+    resources: [configmaps, secrets]
+    resourceNames: []
+    verbs: [create, delete, get, list, patch, update, watch]
+  - apiGroups: [argoproj.io]
+    resources: [applications, applicationsets, appprojects]
+    resourceNames: []
+    verbs: [create, delete, get, list, patch, update, watch]
+  - apiGroups: ['']
+    resources: [events]
+    resourceNames: []
+    verbs: [create, list]
+---
+...
