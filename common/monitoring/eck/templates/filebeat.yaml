@@ -33,7 +33,9 @@ spec:
               # Beats need to read root-owned host log files (/var/log/containers,
               # /var/lib/docker/containers). Running as UID 0 with all caps
               # dropped except DAC_READ_SEARCH (bypass DAC for read) and
-              # privilege-escalation off keeps us within PSA `baseline`.
+              # privilege-escalation off minimizes container privileges needed
+              # for host log access, but this DaemonSet still requires elevated
+              # pod settings such as host networking and hostPath mounts.
               # TODO: revisit non-root run with fsGroup + DAC_READ_SEARCH only.
               runAsUser: 0
               allowPrivilegeEscalation: false
