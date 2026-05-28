@@ -2,7 +2,7 @@
 
 This directory contains the ECK Helm chart. It targets managed RKE2 clusters where the Elastic Cloud on Kubernetes (ECK) operator already runs (Rancher installs it under `kube-system`); our resources are deployed in their own `elastic-system` namespace per platform policy. By default the chart provisions:
 
-- A single-node Elasticsearch cluster plus Kibana.
+- A three-node Elasticsearch cluster plus Kibana.
 
 Optional components (disabled by default):
 
