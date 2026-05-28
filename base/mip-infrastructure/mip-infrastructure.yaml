@@ -35,6 +35,7 @@ spec:
                 # Cluster-wide applications (not for use for the federations, use deployments/shared-apps instead and not declared here)
                 - path: common/datacatalog
                 - path: common/haproxy-ingress
+                - path: common/monitoring
                 - path: common/security
                 - path: common/submariner
           - list:

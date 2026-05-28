@@ -1,0 +1,45 @@
+---
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: eck-stack
+  namespace: argocd-mip-team
+  finalizers: [resources-finalizer.argocd.argoproj.io]
+spec:
+  project: mip-argo-project-monitoring
+  source:
+    repoURL: https://github.com/Medical-Informatics-Platform/mip-infra.git
+    targetRevision: main
+    path: common/monitoring/eck
+    helm:
+      releaseName: eck
+      skipCrds: true
+      values: |
+        # Per platform policy: keep ECK resources in their own namespace
+        # (created by Argo via CreateNamespace=true) instead of kube-system.
+        operator:
+          namespace: elastic-system
+        observability:
+          metricbeat:
+            enabled: true
+          filebeat:
+            enabled: true
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: elastic-system
+  syncPolicy:
+    # Beats run with hostNetwork/hostPath mounts and DAC_READ_SEARCH to collect
+    # node-level logs and metrics, so the namespace must opt out of PSA baseline.
+    managedNamespaceMetadata:
+      labels:
+        app.kubernetes.io/managed-by: argocd
+        pod-security.kubernetes.io/enforce: privileged
+        pod-security.kubernetes.io/audit: privileged
+        pod-security.kubernetes.io/warn: privileged
+    automated:
+      selfHeal: true
+      prune: true
+    syncOptions:
+      # Server-side apply avoids client-side patch timeouts on large
+      # Elastic CRs that the ECK operator concurrently mutates.
+[ServerSideApply=true, CreateNamespace=true]
