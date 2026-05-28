@@ -95,8 +95,19 @@ extract_roles() {
   done
 }
 
+normalize_for_diff() {
+  local src=$1
+  local dest=$2
+  # Canonicalize YAML formatting while suppressing document separators so the
+  # diff is semantic rather than tied to a specific yq pretty-print style.
+  yq -P -N '.' "$src" > "$dest"
+}
+
 extract "$TMPDIR/upstream.yaml" > "$TMPDIR/upstream-extracted.yaml"
 extract_roles "$TMPDIR/upstream.yaml" > "$TMPDIR/upstream-roles.yaml"
+
+normalize_for_diff "$TMPDIR/upstream-extracted.yaml" "$TMPDIR/upstream-extracted.norm.yaml"
+normalize_for_diff "$TMPDIR/upstream-roles.yaml" "$TMPDIR/upstream-roles.norm.yaml"
 
 if [[ "${1:-}" == "--update" ]]; then
   mkdir -p "$(dirname "$SNAPSHOT")"
@@ -113,10 +124,13 @@ if [[ ! -f "$SNAPSHOT" || ! -f "$ROLES_SNAPSHOT" ]]; then
 fi
 
 DRIFT=0
-if ! diff -u "$SNAPSHOT" "$TMPDIR/upstream-extracted.yaml"; then
+normalize_for_diff "$SNAPSHOT" "$TMPDIR/snapshot.norm.yaml"
+normalize_for_diff "$ROLES_SNAPSHOT" "$TMPDIR/roles-snapshot.norm.yaml"
+
+if ! diff -u "$TMPDIR/snapshot.norm.yaml" "$TMPDIR/upstream-extracted.norm.yaml"; then
   DRIFT=1
 fi
-if ! diff -u "$ROLES_SNAPSHOT" "$TMPDIR/upstream-roles.yaml"; then
+if ! diff -u "$TMPDIR/roles-snapshot.norm.yaml" "$TMPDIR/upstream-roles.norm.yaml"; then
   DRIFT=1
 fi
 
