@@ -35,8 +35,9 @@ jobs:
         with:
           cluster_name: mip-argo-test
           wait: 120s
-          # CLUSTER env var below ensures script reuses the cluster instead
-          # of recreating it.
+          # The script below inspects the cluster topology and recreates it
+          # with 1 control-plane + 3 workers if the default single-node kind
+          # cluster is not sufficient for the HA smoke test.
       - name: Run kind smoke test
         env:
           CLUSTER: mip-argo-test

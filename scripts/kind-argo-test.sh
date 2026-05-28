@@ -43,11 +43,7 @@ trap cleanup EXIT
 step() { printf '\n=== %s\n' "$*"; }
 fail() { echo "FAIL: $*" >&2; exit 1; }
 
-step "Create kind cluster '$CLUSTER'"
-if ! kind get clusters | grep -qx "$CLUSTER"; then
-  # Need >=3 schedulable nodes: redis-ha-server / redis-ha-haproxy run 3
-  # replicas with hard pod anti-affinity. The control-plane is tainted
-  # NoSchedule by default, so we provision 3 worker nodes.
+create_ha_kind_cluster() {
   kind create cluster --name "$CLUSTER" --wait 120s --config=- <<'EOF'
 kind: Cluster
 apiVersion: kind.x-k8s.io/v1alpha4
@@ -57,9 +53,26 @@ nodes:
   - role: worker
   - role: worker
 EOF
+}
+
+step "Create kind cluster '$CLUSTER'"
+if ! kind get clusters | grep -qx "$CLUSTER"; then
+  # Need >=3 schedulable nodes: redis-ha-server / redis-ha-haproxy run 3
+  # replicas with hard pod anti-affinity. The control-plane is tainted
+  # NoSchedule by default, so we provision 3 worker nodes.
+  create_ha_kind_cluster
 else
-  echo "(cluster already exists, reusing)"
+  echo "(cluster already exists, inspecting topology)"
   kubectl config use-context "kind-$CLUSTER" >/dev/null
+
+  existing_nodes=$(kubectl get nodes --no-headers 2>/dev/null | wc -l | tr -d ' ')
+  if [[ "$existing_nodes" -lt 4 ]]; then
+    echo "(cluster has ${existing_nodes} node(s); recreating with 1 control-plane + 3 workers)"
+    kind delete cluster --name "$CLUSTER"
+    create_ha_kind_cluster
+  else
+    echo "(cluster already exists with ${existing_nodes} node(s), reusing)"
+  fi
 fi
 
 step "Install Gateway API CRDs (forward-compat SAR)"
