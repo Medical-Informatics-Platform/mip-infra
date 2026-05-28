@@ -42,4 +42,4 @@ spec:
     syncOptions:
       # Server-side apply avoids client-side patch timeouts on large
       # Elastic CRs that the ECK operator concurrently mutates.
-      [ServerSideApply=true, CreateNamespace=true]
+[ServerSideApply=true, CreateNamespace=true]
