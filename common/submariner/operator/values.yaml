@@ -3,7 +3,7 @@
 # These override defaults from official submariner-operator chart
 # Cluster identification - Updated from actual deployment
 submariner:
-  clusterId: mip-tds-fqdn
+  clusterId: mip-fqdn
 
   # Network configuration - From deployed cluster
   clusterCidr: 10.42.0.0/16  # Pod network CIDR
