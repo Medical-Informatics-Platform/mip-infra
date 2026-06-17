@@ -24,67 +24,17 @@ git checkout main
 
 ## 1. Install Argo CD
 
-The HA overlay lives in [`argo-setup/`](../argo-setup/). It pins a specific
-Argo CD release and applies the repo-specific resource, ingress, and config
-patches. See [argo-setup/README.md](../argo-setup/README.md) for the overlay
-details and the full bootstrap flow.
+The HA overlay lives in [`argo-setup/`](../argo-setup/). Run the steps in
+[`argo-setup/README.md` § Bootstrap](../argo-setup/README.md#bootstrap) -
+they cover hostname rewrite, namespace creation, `kustomize build … |
+kubectl apply --server-side`, rollout wait, and bootstrap admin-password
+rotation. From off-cluster you'll need a tunnel + `/etc/hosts` mapping for
+the final `argocd login` step — see [remote-access.md](remote-access.md).
 
-```bash
-ARGOCD_HOST=example.com #YOUR DOMAIN HERE
-ARGOCD_NS=argocd-mip-team
+When `kubectl -n argocd-mip-team rollout status deploy/argocd-server`
+returns successfully and you've rotated the admin password, come back here.
 
-cd argo-setup
-
-# BSD-Style
-LC_ALL=C find . -type f -not -path '*/.git/*' -exec sed -i '' "s/example.com/$ARGOCD_HOST/g" {} +
-# GNU-Style
-LC_ALL=C find . -type f -not -path '*/.git/*' -exec sed -i "s/example.com/$ARGOCD_HOST/g" {} +
-
-kubectl create namespace "$ARGOCD_NS"
-
-# Server-side apply is required: the `applicationsets.argoproj.io` CRD
-# exceeds the 256 KiB limit for the client-side `last-applied-configuration`
-# annotation and a plain `kubectl apply` fails with
-#   metadata.annotations: Too long: may not be more than 262144 bytes
-kustomize build patches \
-  | kubectl apply -n "$ARGOCD_NS" --server-side -f -
-
-kubectl -n "$ARGOCD_NS" rollout status deploy/argocd-server
-```
-
-Update the placeholder hostname in
-[`argo-setup/patches/patch-argocd-ingress.yaml`](../argo-setup/patches/patch-argocd-ingress.yaml)
-to your real DNS record before applying in production.
-
-Quick sanity checks:
-
-```bash
-kubectl -n "$ARGOCD_NS" get pods
-```
-
-## 2. Rotate the bootstrap admin password
-
-Use the Argo CD CLI. From off-cluster you'll need a tunnel + `/etc/hosts`
-mapping first — see [remote-access.md](remote-access.md).
-
-```bash
-ARGOCD_NS=argocd-mip-team
-
-# Read the bootstrap password
-ARGO_TEMP_PW=$(kubectl -n "$ARGOCD_NS" get secret argocd-initial-admin-secret \
-  -o jsonpath="{.data.password}" | base64 -d)
-echo "Initial 'admin' password: $ARGO_TEMP_PW"
-
-# Log in (use the host you reach Argo CD on; add :8443 if you're using the
-# SSH -L tunnel from remote-access.md)
-argocd login <argocd-host> --grpc-web --username admin
-argocd account update-password
-
-# Optionally Drop the bootstrap secret
-# kubectl -n "$ARGOCD_NS" delete secret argocd-initial-admin-secret --ignore-not-found
-```
-
-## 2b. Register repositories with Argo CD
+## 2. Register repositories with Argo CD
 
 Register this repository in Argo CD. If your deployment values live in the
 private `mip-deployments` repository, register that too.
@@ -126,7 +76,7 @@ Two-step bootstrap. The order matters: nothing else can sync until
 kubectl apply -f projects/mip-infrastructure.yaml
 
 # ApplicationSet that creates every other AppProject
-kubectl apply -f base/argo-projects.yaml
+kubectl apply -f base/argo-projects/argo-projects.yaml
 
 # Verify — should show all static projects + per-fed projects
 kubectl get appprojects -n argocd-mip-team
