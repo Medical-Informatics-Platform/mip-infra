@@ -24,7 +24,7 @@ Defense-in-depth fails when Layer 1 is broader than Layer 2.
 
 Two SAs, both cluster-scoped. Sources:
 [`patch-argocd-application-controller-clusterrole.yaml`](../argo-setup/patches/patch-argocd-application-controller-clusterrole.yaml),
-[`patch-argocd-server-extra-read.yaml`](../argo-setup/patches/patch-argocd-server-extra-read.yaml).
+[`patch-argocd-server-clusterrole.yaml`](../argo-setup/patches/patch-argocd-server-clusterrole.yaml).
 
 ### `argocd-application-controller` — does the actual sync writes
 | API group | Resources | Verbs | Notes |
@@ -151,7 +151,7 @@ External charts that *do* render their own RBAC (datacatalog, exareme2, mip plat
 
 ---
 
-Pinned at Argo CD [v3.3.9](../argo-setup/patches/kustomization.yaml). To bump:
+Pinned at Argo CD (../argo-setup/patches/kustomization.yaml). To bump:
 edit the tag, run `bash scripts/check-upstream-argo-clusterroles.sh --update`,
 review the diff, commit snapshot + tag together.
 
