@@ -27,7 +27,13 @@ jobs:
         run: |
           # The yamlfix command will automatically find and apply fixes to any YAML files.
           # It uses the `.yamllint.yml` configuration file for its rules.
-          yamlfix --exclude "**/templates/**" --exclude ".github/workflows/**" . && yamlfix common/security/kustomization.yaml common/security/netpol.yaml
+          # common/monitoring/eck-stack.yaml is excluded because yamlfix 1.19.1
+          # compacts its `syncOptions` block list to flow style and drops the
+          # parent indentation, producing invalid YAML
+          # (`[ServerSideApply=true, CreateNamespace=true]` at column 0) that
+          # breaks `kustomize build`. Drop this exclude once the upstream bug
+          # is fixed.
+          yamlfix --exclude "**/templates/**" --exclude ".github/workflows/**" --exclude "common/monitoring/eck-stack.yaml" . && yamlfix common/security/kustomization.yaml common/security/netpol.yaml
 
           # Stage only non-workflow changes so the bot never attempts to modify
           # workflow files, which requires elevated permissions.
