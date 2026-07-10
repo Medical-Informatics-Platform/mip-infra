@@ -83,3 +83,22 @@ To make a new application available to every federation:
 ## Bumping Argo CD
 
 See [argo-setup/README.md](../argo-setup/README.md#bumping-argo-cd).
+
+## Dependency updates (Renovate + Dependabot)
+
+Two bots keep dependencies current, split by ecosystem. Nothing is automerged — every PR needs human review.
+
+### Renovate — everything except GitHub Actions
+
+The [Mend Renovate GitHub App](https://github.com/apps/renovate) opens PRs on its recurring schedule (roughly hourly), configured in [`renovate.json5`](../renovate.json5) at the repo root. The Dependency Dashboard issue on GitHub lists every tracked dependency and pending update.
+
+- **External app charts** (exareme2, mip-stack, datacatalog): bumps the `targetRevision` commit SHA and its `# <version>` comment together, resolved from the upstream repo's tags. The shared-apps baselines and the per-federation overrides under `deployments/hybrid/federations/**` get separate PRs; the exareme2 chart SHA and `exaflow_images.version` move in one PR.
+- **Argo CD upstream** (`argo-setup/patches/kustomization.yaml`): bump PRs automatically trigger the ClusterRole drift check and the kind smoke test — follow [argo-setup/README.md](../argo-setup/README.md#bumping-argo-cd) before merging.
+- **Submariner charts**, the **ECK/Elastic stack** (annotated `version:`/`tag:` keys in `common/monitoring/eck/values.yaml`, grouped into one PR), and the **HAProxy ingress controller image**.
+- **yq/kustomize CI binaries**: version and SHA256 checksum are bumped together (checksum resolved from the GitHub release assets).
+
+Deliberately ignored: `bitnami/kubectl` in the submariner copy-secret hook (the hook is scheduled for removal).
+
+### Dependabot — GitHub Actions only
+
+[`.github/dependabot.yml`](../.github/dependabot.yml) updates action versions **monthly**, grouped into a single PR, keeping the SHA-pinned-with-`# vX.Y.Z`-comment style. Renovate's github-actions manager is disabled so the two bots never open duplicate PRs.

@@ -1,0 +1,118 @@
+{
+  $schema: 'https://docs.renovatebot.com/renovate-schema.json',
+  extends: [
+    'config:recommended',
+    ':dependencyDashboard',
+    ':semanticCommits',
+  ],
+  automerge: false,
+  labels: ['dependencies'],
+
+  // GitHub Actions are managed by Dependabot (.github/dependabot.yml), so
+  // disable Renovate's github-actions manager to avoid duplicate PRs.
+  'github-actions': {
+    enabled: false,
+  },
+
+  // Built-in managers relied on:
+  //  - kustomize: Submariner helmCharts blocks (common/submariner/{broker,operator})
+  //  - kubernetes: HAProxy ingress controller image
+  kubernetes: {
+    managerFilePatterns: ['/^common/haproxy-ingress/manifests/.+\\.yaml$/'],
+  },
+
+  customManagers: [
+    // ArgoCD Application git sources pinned by commit SHA + tag comment:
+    //   targetRevision: <40-hex sha>  # <semver>
+    // `targetRevision: main` self-references can never match (40-hex required),
+    // which keeps the check-main-revisions CI invariant intact.
+    {
+      customType: 'regex',
+      description: 'targetRevision: <sha>  # <semver> in ArgoCD Applications',
+      managerFilePatterns: [
+        '/^deployments/shared-apps/.+\\.yaml$/',
+        '/^deployments/hybrid/federations/.+/customizations/.+\\.yaml$/',
+        '/^common/datacatalog/.+\\.yaml$/',
+      ],
+      matchStrings: [
+        'repoURL: https://github\\.com/(?<packageName>[^\\s]+?)(?:\\.git)?\\n\\s+targetRevision: (?<currentDigest>[a-f0-9]{40})\\s+#\\s*(?<currentValue>\\S+)',
+      ],
+      datasourceTemplate: 'github-tags',
+      versioningTemplate: 'semver',
+    },
+    // exareme2 image version in shared values — grouped with the chart SHA bump
+    // so chart and images move in the same PR.
+    {
+      customType: 'regex',
+      description: 'exaflow_images.version in exareme2 shared values',
+      managerFilePatterns: ['/^deployments/shared-apps/exareme2/values\\.yaml$/'],
+      matchStrings: ['version: (?<currentValue>\\d+\\.\\d+\\.\\d+)'],
+      depNameTemplate: 'madgik/exareme2',
+      datasourceTemplate: 'github-tags',
+      versioningTemplate: 'semver',
+    },
+    // Argo CD upstream HA manifest (kustomize remote base via raw.githubusercontent).
+    // A bump PR automatically triggers the ClusterRole drift check and kind smoke test.
+    {
+      customType: 'regex',
+      description: 'Argo CD upstream version in the kustomize remote base URL',
+      managerFilePatterns: ['/^argo-setup/patches/kustomization\\.yaml$/'],
+      matchStrings: ['raw\\.githubusercontent\\.com/argoproj/argo-cd/(?<currentValue>v[\\d.]+)/manifests/'],
+      depNameTemplate: 'argoproj/argo-cd',
+      datasourceTemplate: 'github-releases',
+    },
+    // Generic "# renovate:" annotation manager (ECK values.yaml version/tag keys).
+    {
+      customType: 'regex',
+      description: 'Annotated version/tag keys in ECK Helm values',
+      managerFilePatterns: ['/^common/monitoring/eck/values\\.yaml$/'],
+      matchStrings: [
+        '# renovate: datasource=(?<datasource>\\S+) depName=(?<depName>\\S+)\\n\\s*(?:version|tag): (?<currentValue>\\S+)',
+      ],
+    },
+    // CI tool binaries: version + SHA256 checksum bumped together.
+    // github-release-attachments resolves the checksum of the matching release asset.
+    {
+      customType: 'regex',
+      description: 'yq binary in workflows (version + sha256)',
+      managerFilePatterns: ['/^\\.github/workflows/.+\\.ya?ml$/'],
+      matchStrings: [
+        'YQ_VERSION: (?<currentValue>\\S+)\\n\\s+YQ_SHA256: (?<currentDigest>[a-f0-9]{64})',
+      ],
+      depNameTemplate: 'mikefarah/yq',
+      datasourceTemplate: 'github-release-attachments',
+    },
+    {
+      customType: 'regex',
+      description: 'kustomize binary in workflows (version + sha256)',
+      managerFilePatterns: ['/^\\.github/workflows/.+\\.ya?ml$/'],
+      matchStrings: [
+        'KUSTOMIZE_VERSION: (?<currentValue>\\S+)\\n\\s+KUSTOMIZE_SHA256: (?<currentDigest>[a-f0-9]{64})',
+      ],
+      depNameTemplate: 'kubernetes-sigs/kustomize',
+      datasourceTemplate: 'github-release-attachments',
+      extractVersionTemplate: '^kustomize/(?<version>.+)$',
+    },
+  ],
+
+  packageRules: [
+    // Never touch bitnami/kubectl — the submariner copy-secret hook is being removed soon.
+    { matchPackageNames: ['bitnami/kubectl'], enabled: false },
+    // Elastic stack moves in lockstep: operator + ES/Kibana/Beats + notifier in one PR.
+    { matchFileNames: ['common/monitoring/eck/values.yaml'], groupName: 'elastic-stack' },
+    // exareme2 baseline: chart SHA (Application yaml) + exaflow_images.version (values) in one PR.
+    {
+      matchPackageNames: ['madgik/exareme2'],
+      matchFileNames: ['deployments/shared-apps/**'],
+      groupName: 'exareme2 baseline',
+    },
+    // Submariner broker + operator charts in one PR.
+    { matchManagers: ['kustomize'], groupName: 'submariner' },
+    // Federation overrides: keep their PRs separate from the shared-apps baselines.
+    {
+      matchFileNames: ['deployments/hybrid/federations/**'],
+      additionalBranchPrefix: 'federations-',
+      commitMessageSuffix: '(federation override)',
+    },
+  ],
+}
