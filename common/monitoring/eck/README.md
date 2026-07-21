@@ -15,7 +15,7 @@ Optional components (disabled by default):
 - RKE2 cluster with access to the `elastic-system` namespace.
 - ECK operator running cluster-wide.
   > **Note regarding the ECK Operator**: This chart does **not** install the operator because doing so requires cluster-admin privileges that shouldn't be granted to this standard monitoring deployment. If your hosting provider (like Rancher) already provides it, you are good to go. Otherwise, you must install the `common/elastic-operator` chart and its privileged namespace manually or include it in your infrastructure overlays before deploying this monitoring stack.
-- Default StorageClass compatible with the sample workloads (defaults assume `ceph-corbo-cephfs`).
+- Default StorageClass compatible with the sample workloads (defaults assume `ceph-corbo-rbd-hdd-retain` for Elasticsearch data and Beat state; 50Gi per ES node).
 - Namespace prepared for Beats hostPath mounts (needed only if Beats are enabled and Pod Security Admission is enforced). Argo-managed installs via `common/monitoring/eck-stack.yaml` apply these labels automatically. For direct Helm installs, prepare the namespace manually:
 
   ```bash
@@ -52,10 +52,10 @@ Supply overrides through `--set`/`-f my-values.yaml` as usual.
 
 All knobs live in `values.yaml`. Common overrides:
 
-- `elasticsearch.*` – adjust resources, replica count, or the StorageClass. Note: The default `storageClassName` is currently hardcoded to `ceph-corbo-cephfs` as it aligns with our current infrastructure, but you can override this for deployments in other environments.
+- `elasticsearch.*` – adjust resources, replica count, or the StorageClass. Default data volume is `50Gi` on `ceph-corbo-rbd-hdd-retain` (block storage; avoid CephFS for ES data).
 - `kibana.ingress.*` – enable ingress, set hosts/TLS, or keep using port-forward.
-- `observability.filebeat.*` / `observability.metricbeat.*` – enable and tune the DaemonSets. Filebeat defaults to 100m CPU, 400Mi request / 600Mi limit. Both use Generic Ephemeral Volumes for their `data` mounts by default (set to `ceph-corbo-cephfs` at 2Gi).
-- `alertNotifier.*` – enable notifier mode, then change the Cron schedule, PVC behaviour, secret names/keys, or Teams/Webex delivery. Note: Like Elasticsearch, the notifier PVC's default `storageClassName` is hardcoded to `ceph-corbo-cephfs`.
+- `observability.filebeat.*` / `observability.metricbeat.*` – enable and tune the DaemonSets. Filebeat keeps only namespaces whose name contains `federation`, with ILM rollover at 7d/5GB and delete after 14d. Metricbeat scrapes node/system/apiserver plus federation pod metrics every 60s with the same ILM policy. Both use Generic Ephemeral Volumes for their `data` mounts by default (`ceph-corbo-rbd-hdd-retain` at 2Gi).
+- `alertNotifier.*` – enable notifier mode, then change the Cron schedule, PVC behaviour, secret names/keys, or Teams/Webex delivery. Note: the notifier PVC default `storageClassName` is `ceph-corbo-cephfs`.
 
 ## Alert notifier configuration
 
@@ -172,7 +172,9 @@ Then browse to `https://localhost:5601` (accept the self-signed cert warning) an
 
 ## Observability notes
 
-Filebeat autodiscovers pods via hints and forwards container logs. Metricbeat scrapes nodes, pods, containers, volumes, the apiserver, and host metrics. They are disabled by default and can be enabled through `observability.*` in `values.yaml`.
+Filebeat autodiscovers pods via hints and forwards container logs **only** for namespaces whose name contains `federation`. Metricbeat scrapes node/system/apiserver metrics cluster-wide and pod metrics only for those federation namespaces (60s period). Both ship with ILM: rollover at 7 days or 5GB primary shard, delete after 14 days. They are disabled by default in `values.yaml` and enabled for staging via `observability.*` in `common/monitoring/eck-stack.yaml`.
+
+Changing Elasticsearch `storageClassName` or replacing full disks requires deleting the Elasticsearch PVCs (and typically the Elasticsearch CR) so ECK can recreate volumes — volumeClaimTemplate storage class is immutable.
 
 ## Uninstalling
 
