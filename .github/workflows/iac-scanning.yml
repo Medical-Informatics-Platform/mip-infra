@@ -15,6 +15,7 @@ jobs:
     permissions:
       contents: read
       security-events: write # required by upload-sarif to post results to the GitHub Security tab
+      actions: read # upload-sarif reads the workflow run for its analysis context (recommended by codeql-action)
 
     steps:
       - name: Checkout code
@@ -34,11 +35,14 @@ jobs:
           soft_fail: true
 
       - name: Upload SARIF to GitHub Security tab
-        # GitHub restricts token permissions on fork PRs so we skip the upload there
-        # upload only runs on push or same-repo PRs where the token has enough permissions
+        # Skip the upload where it cannot succeed, so mirrors/forks don't fail the run:
+        #  - private repos without GitHub code scanning enabled reject the SARIF upload -
+        #    gate on the repo being public, where code scanning is available by default.
+        #  - fork PRs get a read-only token, so upload only runs on push or same-repo PRs.
         if: >-
-          always() &&
+          !cancelled() &&
           hashFiles('checkov-results.sarif') != '' &&
+          github.event.repository.private == false &&
           (github.event_name != 'pull_request' ||
            github.event.pull_request.head.repo.full_name == github.repository)
         uses: github/codeql-action/upload-sarif@e4fba868fa4b1b91e1fdab776edc8cfbe6e9fb81 # v4.37.3
