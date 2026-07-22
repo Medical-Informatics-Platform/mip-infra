@@ -1,0 +1,18 @@
+---
+# GitHub Actions updates are handled by Dependabot (not Renovate — its
+# github-actions manager is disabled in renovate.json5). Everything else in
+# the repo is managed by Renovate.
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: monthly
+    # One grouped PR per month for all action bumps.
+    groups:
+      github-actions:
+        patterns: ['*']
+    # Match the repo's semantic-commit history (e.g. `chore: bump ...`).
+    commit-message:
+      prefix: chore
+    labels: [dependencies]

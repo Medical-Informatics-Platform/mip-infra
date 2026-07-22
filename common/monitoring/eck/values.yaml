@@ -3,9 +3,11 @@ operator:
   enabled: false
   createNamespace: false
   namespace: elastic-system
+  # renovate: datasource=docker depName=docker.elastic.co/eck/eck-operator
   version: 2.13.0
   image:
     repository: docker.elastic.co/eck/eck-operator
+    # renovate: datasource=docker depName=docker.elastic.co/eck/eck-operator
     tag: 2.13.0
     pullPolicy: IfNotPresent
   replicas: 1
@@ -60,6 +62,7 @@ elasticsearch:
   enabled: true
   namespace: elastic-system
   name: elasticsearch-sample
+  # renovate: datasource=docker depName=docker.elastic.co/elasticsearch/elasticsearch
   version: 8.13.4
   labels: {}
   annotations: {}
@@ -101,6 +104,7 @@ kibana:
   enabled: true
   namespace: elastic-system
   name: kibana-sample
+  # renovate: datasource=docker depName=docker.elastic.co/elasticsearch/elasticsearch
   version: 8.13.4
   count: 1
   labels: {}
@@ -140,6 +144,7 @@ kibana:
 observability:
   filebeat:
     enabled: false
+    # renovate: datasource=docker depName=docker.elastic.co/elasticsearch/elasticsearch
     version: 8.13.4
     state:
       persistence:
@@ -175,6 +180,7 @@ observability:
       password: ${ELASTICSEARCH_PASSWORD}
   metricbeat:
     enabled: false
+    # renovate: datasource=docker depName=docker.elastic.co/elasticsearch/elasticsearch
     version: 8.13.4
     state:
       persistence:
@@ -224,6 +230,7 @@ alertNotifier:
   backoffLimit: 3
   image:
     repository: madgik/eck-notifier
+    # renovate: datasource=docker depName=madgik/eck-notifier
     tag: 0.0.1
     pullPolicy: IfNotPresent
   imagePullSecrets: []
