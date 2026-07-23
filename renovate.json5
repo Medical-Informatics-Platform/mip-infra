@@ -4,6 +4,9 @@
     'config:recommended',
     ':dependencyDashboard',
     ':semanticCommits',
+    // Add Merge Confidence badges (Age, Adoption, Passing, Confidence) to PR bodies.
+    // Data is served free by Mend to the hosted Renovate GitHub App.
+    'mergeConfidence:all-badges',
   ],
   automerge: false,
   labels: ['dependencies'],
