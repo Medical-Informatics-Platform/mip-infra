@@ -8,7 +8,10 @@ keycloak:
   enabled: false
 # No ingress controller in the federation profiles; an Ingress that never
 # receives a load-balancer status would keep the Argo Application
-# Progressing forever. The ingress path is exercised by the haproxy profile.
-platform-ui:
-  ingress:
-    enabled: false
+# Progressing forever. The chart guards the Ingress with
+# `and $ingressEnabled (not (empty $publicHost))` and its
+# `default true $ingress.enabled` swallows an explicit `enabled: false`
+# (sprig treats false as empty), so the empty publicHost is the effective
+# switch. The ingress path is exercised by the haproxy profile instead.
+global:
+  publicHost: ''

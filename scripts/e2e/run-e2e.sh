@@ -326,9 +326,11 @@ profile_eck() {
   wait_app eck-stack 900
 
   step "Verify Elasticsearch/Kibana CRD-reported health"
-  retry 42 10 "elasticsearch not green" \
-    bash -c "[[ \"\$(kubectl -n elastic-system get elasticsearch elasticsearch-sample -o jsonpath='{.status.health}')\" == green ]]"
-  echo "OK: elasticsearch CR reports green"
+  # yellow is the healthy steady state of a 1-node cluster: replicas of
+  # system indices (e.g. Kibana's) can never assign. Red is the failure.
+  retry 42 10 "elasticsearch not green/yellow" \
+    bash -c "kubectl -n elastic-system get elasticsearch elasticsearch-sample -o jsonpath='{.status.health}' | grep -qE '^(green|yellow)$'"
+  echo "OK: elasticsearch CR reports green/yellow"
   retry 42 10 "kibana not green" \
     bash -c "[[ \"\$(kubectl -n elastic-system get kibana kibana-sample -o jsonpath='{.status.health}')\" == green ]]"
   echo "OK: kibana CR reports green"
@@ -339,7 +341,15 @@ profile_eck() {
   es_pw=$(kubectl -n elastic-system get secret elasticsearch-sample-es-elastic-user \
             -o jsonpath='{.data.elastic}' | base64 -d)
   assert_body elastic-system "https://elasticsearch-sample-es-http:9200/_cluster/health" \
-    '"status":"green"' "ES /_cluster/health reports green" -k -u "elastic:${es_pw}"
+    '"status":"(green|yellow)"' "ES /_cluster/health reports green/yellow" -k -u "elastic:${es_pw}"
+  # Service truth beyond cluster color: write a document and search it back.
+  probe_curl elastic-system -k -u "elastic:${es_pw}" \
+    -X POST -H 'Content-Type: application/json' -d '{"probe":"e2e"}' \
+    "https://elasticsearch-sample-es-http:9200/e2e-smoke/_doc?refresh=true" >/dev/null \
+    || fail "ES rejected a document write"
+  assert_body elastic-system \
+    "https://elasticsearch-sample-es-http:9200/e2e-smoke/_search?q=probe:e2e" \
+    '"value":[1-9]' "ES indexes and finds a written document" -k -u "elastic:${es_pw}"
   assert_body elastic-system "https://kibana-sample-kb-http:5601/api/status" \
     '"level":"available"' "Kibana /api/status reports available" -k -u "elastic:${es_pw}"
 }
@@ -402,15 +412,24 @@ profile_haproxy() {
   kubectl apply -f "$REPO_ROOT/common/haproxy-ingress/test-ingress.yaml"
   kubectl -n default rollout status deploy/test-haproxy-public --timeout=180s
   ensure_probe default
-  retry 12 10 "haproxy did not route test.example.com to the echo backend" \
-    bash -c "kubectl -n default exec e2e-probe -- curl -fsS --max-time 15 \
+  # The production configmap enforces ssl-redirect, so :80 must answer with
+  # a redirect — assert that production behavior instead of expecting content.
+  retry 12 10 "haproxy :80 did not answer the ssl-redirect" \
+    bash -c "kubectl -n default exec e2e-probe -- curl -sS -o /dev/null -w '%{http_code}' --max-time 15 \
       -H 'Host: test.example.com' http://haproxy-public-controller.ingress-nginx.svc:80/ \
+      | grep -qE '^30[1278]$'"
+  echo "OK: :80 redirects to https (ssl-redirect)"
+  # Content assertion over https (-k: the default certificate is self-signed
+  # for *.mip.chuv.cscs.ch); haproxy routes on the Host header.
+  retry 12 10 "haproxy did not route test.example.com to the echo backend" \
+    bash -c "kubectl -n default exec e2e-probe -- curl -fsSk --max-time 15 \
+      -H 'Host: test.example.com' https://haproxy-public-controller.ingress-nginx.svc:443/ \
       | grep -q 'haproxy-public IngressClass Working'"
-  echo "OK: Ingress -> backend content assertion passed"
-  # Negative: an unknown Host must not reach the backend (haproxy answers
-  # with a non-2xx default response, so curl -f fails).
-  if probe_curl default -H 'Host: unknown.example.com' \
-       "http://haproxy-public-controller.ingress-nginx.svc:80/" >/dev/null 2>&1; then
+  echo "OK: Ingress -> backend content assertion passed (via https)"
+  # Negative: an unknown Host must not reach the backend over https (on :80
+  # it would just get the ssl-redirect). haproxy answers non-2xx -> curl -f fails.
+  if probe_curl default -k -H 'Host: unknown.example.com' \
+       "https://haproxy-public-controller.ingress-nginx.svc:443/" >/dev/null 2>&1; then
     fail "haproxy served an unknown Host (default backend leak?)"
   fi
   echo "OK: unknown Host is refused"
