@@ -58,8 +58,7 @@ cleanup() {
   local rc=$?
   rm -rf "$WORKDIR"
   # Reuse the shared teardown (honors KEEP); it exits with $rc for us.
-  teardown_cluster
-  exit "$rc"
+  teardown_cluster "$rc"
 }
 trap cleanup EXIT
 

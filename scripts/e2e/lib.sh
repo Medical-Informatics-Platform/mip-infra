@@ -54,8 +54,10 @@ ensure_kind_cluster() {
 }
 
 # EXIT-trap body shared by the entrypoints. Honors KEEP=1.
+# Exits with $1 when given (for traps that do work before calling this,
+# which would clobber $?), else with the status at entry.
 teardown_cluster() {
-  local rc=$?
+  local rc=${1:-$?}
   if [[ "${KEEP:-0}" != "1" ]]; then
     echo "--- Tearing down kind cluster '$CLUSTER'"
     kind delete cluster --name "$CLUSTER" >/dev/null 2>&1 || true
