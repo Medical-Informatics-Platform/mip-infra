@@ -1,0 +1,23 @@
+---
+# CI stand-in for the production MetalLB pool. The haproxy-public Service
+# pins loadBalancerIP 148.187.143.44 and the `metallb.io/address-pool:
+# pool-no-auto` annotation, so a /32 pool containing exactly that address
+# lets MetalLB assign it verbatim and the production Service manifest
+# deploys byte-identical on kind. The VIP is never routed in CI — traffic
+# assertions go through the Service DNS in-cluster.
+apiVersion: metallb.io/v1beta1
+kind: IPAddressPool
+metadata:
+  name: pool-no-auto
+  namespace: metallb-system
+spec:
+  addresses: [148.187.143.44/32]
+  autoAssign: false
+---
+apiVersion: metallb.io/v1beta1
+kind: L2Advertisement
+metadata:
+  name: pool-no-auto
+  namespace: metallb-system
+spec:
+  ipAddressPools: [pool-no-auto]

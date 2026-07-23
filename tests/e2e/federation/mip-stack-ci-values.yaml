@@ -1,0 +1,14 @@
+---
+# CI-only mip-stack values for kind.
+#
+# keycloak disabled -> the backend runs with AUTHENTICATION=0. The
+# keycloak-credentials secret refs are still required by the pod spec and are
+# satisfied with dummy values by scripts/e2e/ci-secrets.sh.
+keycloak:
+  enabled: false
+# No ingress controller in the federation profiles; an Ingress that never
+# receives a load-balancer status would keep the Argo Application
+# Progressing forever. The ingress path is exercised by the haproxy profile.
+platform-ui:
+  ingress:
+    enabled: false
