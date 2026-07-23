@@ -21,85 +21,29 @@
 set -euo pipefail
 
 CLUSTER=${CLUSTER:-mip-argo-test}
-NS=argocd-mip-team
 REPO_ROOT=$(cd "$(dirname "$0")/.." && pwd)
 KEEP=${KEEP:-0}
 
-need() { command -v "$1" >/dev/null 2>&1 || { echo "missing: $1" >&2; exit 2; }; }
+# Shared cluster/Argo bring-up helpers (need/step/fail, ensure_kind_cluster,
+# install_argo_overlay, ...). Also sets NS + GATEWAY_API_VERSION.
+# shellcheck source=e2e/lib.sh
+source "$REPO_ROOT/scripts/e2e/lib.sh"
+
 need kind; need kubectl; need kustomize; need docker
 
-cleanup() {
-  local rc=$?
-  if [[ "$KEEP" != "1" ]]; then
-    echo "--- Tearing down kind cluster '$CLUSTER'"
-    kind delete cluster --name "$CLUSTER" >/dev/null 2>&1 || true
-  else
-    echo "--- KEEP=1: leaving cluster '$CLUSTER' up. Delete with: kind delete cluster --name $CLUSTER"
-  fi
-  exit "$rc"
-}
-trap cleanup EXIT
-
-step() { printf '\n=== %s\n' "$*"; }
-fail() { echo "FAIL: $*" >&2; exit 1; }
-
-create_ha_kind_cluster() {
-  kind create cluster --name "$CLUSTER" --wait 120s --config=- <<'EOF'
-kind: Cluster
-apiVersion: kind.x-k8s.io/v1alpha4
-nodes:
-  - role: control-plane
-  - role: worker
-  - role: worker
-  - role: worker
-EOF
-}
+trap teardown_cluster EXIT
 
 step "Create kind cluster '$CLUSTER'"
-if ! kind get clusters | grep -qx "$CLUSTER"; then
-  # Need >=3 schedulable nodes: redis-ha-server / redis-ha-haproxy run 3
-  # replicas with hard pod anti-affinity. The control-plane is tainted
-  # NoSchedule by default, so we provision 3 worker nodes.
-  create_ha_kind_cluster
-else
-  echo "(cluster already exists, inspecting topology)"
-  kubectl config use-context "kind-$CLUSTER" >/dev/null
-
-  existing_nodes=$(kubectl get nodes --no-headers 2>/dev/null | wc -l | tr -d ' ')
-  if [[ "$existing_nodes" -lt 4 ]]; then
-    echo "(cluster has ${existing_nodes} node(s); recreating with 1 control-plane + 3 workers)"
-    kind delete cluster --name "$CLUSTER"
-    create_ha_kind_cluster
-  else
-    echo "(cluster already exists with ${existing_nodes} node(s), reusing)"
-  fi
-fi
+ensure_kind_cluster
 
 step "Install Gateway API CRDs (forward-compat SAR)"
-# Pinned to v1.3.0 standard channel. Required so the SAR for HTTPRoutes
-# resolves the resource — without the CRDs `kubectl auth can-i` returns no.
-GATEWAY_API_VERSION=v1.3.0
-kubectl apply -f "https://github.com/kubernetes-sigs/gateway-api/releases/download/${GATEWAY_API_VERSION}/standard-install.yaml"
+install_gateway_api_crds
 
 step "Apply Argo CD overlay"
-kubectl create namespace "$NS" --dry-run=client -o yaml | kubectl apply -f -
-# AppProject CRD must exist before our static AppProjects apply, so we install
-# the overlay (which includes upstream CRDs) first and only then the projects.
-# --server-side because the applicationsets CRD exceeds the 256KB
-# last-applied-configuration annotation limit.
-kustomize build "$REPO_ROOT/argo-setup/patches" \
-  | kubectl apply --server-side --force-conflicts -f -
+install_argo_overlay
 
 step "Wait for HA workloads to be Ready"
-# Wait long enough for image pulls on a cold kind node.
-kubectl -n "$NS" rollout status statefulset/argocd-application-controller --timeout=300s
-kubectl -n "$NS" rollout status statefulset/argocd-redis-ha-server      --timeout=300s
-kubectl -n "$NS" rollout status deploy/argocd-server                     --timeout=300s
-kubectl -n "$NS" rollout status deploy/argocd-repo-server                --timeout=300s
-kubectl -n "$NS" rollout status deploy/argocd-redis-ha-haproxy           --timeout=300s
-kubectl -n "$NS" rollout status deploy/argocd-dex-server                 --timeout=300s
-kubectl -n "$NS" rollout status deploy/argocd-applicationset-controller  --timeout=300s
-kubectl -n "$NS" rollout status deploy/argocd-notifications-controller   --timeout=300s
+wait_argo_rollouts
 
 step "Verify tightened ClusterRoles are live"
 # argocd-server must NOT have cluster-wide secret read.
@@ -169,14 +113,7 @@ for pdb in "${expected_pdbs[@]}"; do
 done
 
 step "Apply static AppProjects"
-kubectl apply --server-side --force-conflicts -f "$REPO_ROOT/base/argo-projects/argo-projects.yaml"
-for f in "$REPO_ROOT"/projects/static/*/*.yaml; do
-  # Skip kustomize control files; only apply actual k8s manifests.
-  case "$(basename "$f")" in
-    kustomization.yaml|values.yaml) continue ;;
-  esac
-  kubectl apply --server-side --force-conflicts -f "$f"
-done
+apply_static_appprojects
 
 step "Verify AppProjects landed"
 got=$(kubectl -n "$NS" get appprojects -o name | wc -l | tr -d ' ')
