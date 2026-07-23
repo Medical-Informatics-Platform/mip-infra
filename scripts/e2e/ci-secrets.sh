@@ -41,6 +41,9 @@ if [[ "$TARGET" == "all" || "$TARGET" == "federation" ]]; then
   if secret_exists "$FED_NS" keycloak-credentials; then
     echo "[skip] $FED_NS/keycloak-credentials exists"
   else
+    # Generate outside the heredoc so a gen_password failure aborts the
+    # script instead of applying an empty value from a dead subshell.
+    kc_secret=$(gen_password)
     kubectl -n "$FED_NS" apply -f - <<EOF
 apiVersion: v1
 kind: Secret
@@ -49,7 +52,7 @@ metadata:
 type: Opaque
 stringData:
   client-id: e2e-dummy
-  client-secret: $(gen_password)
+  client-secret: ${kc_secret}
 EOF
     echo "[ok ] $FED_NS/keycloak-credentials"
   fi
@@ -57,6 +60,8 @@ EOF
   if secret_exists "$FED_NS" mip-secret; then
     echo "[skip] $FED_NS/mip-secret exists"
   else
+    db_admin_pw=$(gen_password)
+    db_user_pw=$(gen_password)
     kubectl -n "$FED_NS" apply -f - <<EOF
 apiVersion: v1
 kind: Secret
@@ -65,9 +70,9 @@ metadata:
 type: Opaque
 stringData:
   platform-backend-db.DB_ADMIN_USER: postgres
-  platform-backend-db.DB_ADMIN_PASSWORD: $(gen_password)
+  platform-backend-db.DB_ADMIN_PASSWORD: ${db_admin_pw}
   platform-backend-db.PLATFORM_DB_USER: portal
-  platform-backend-db.PLATFORM_DB_PASSWORD: $(gen_password)
+  platform-backend-db.PLATFORM_DB_PASSWORD: ${db_user_pw}
 EOF
     echo "[ok ] $FED_NS/mip-secret"
   fi
@@ -79,6 +84,8 @@ if [[ "$TARGET" == "all" || "$TARGET" == "datacatalog" ]]; then
   if secret_exists "$DC_NS" datacatalog-secrets; then
     echo "[skip] $DC_NS/datacatalog-secrets exists"
   else
+    dc_kc_secret=$(gen_password)
+    dc_db_pw=$(gen_password)
     kubectl -n "$DC_NS" apply -f - <<EOF
 apiVersion: v1
 kind: Secret
@@ -87,9 +94,9 @@ metadata:
 type: Opaque
 stringData:
   keycloak.client-id: e2e-dummy
-  keycloak.client-secret: $(gen_password)
+  keycloak.client-secret: ${dc_kc_secret}
   db.user: datacatalog
-  db.password: $(gen_password)
+  db.password: ${dc_db_pw}
 EOF
     echo "[ok ] $DC_NS/datacatalog-secrets"
   fi

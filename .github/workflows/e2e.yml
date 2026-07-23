@@ -23,6 +23,7 @@ on:
       - common/datacatalog/**
       - common/submariner/**
       - base/mip-infrastructure/rbac/haproxy-public-rbac.yaml
+      - projects/templates/**
       - scripts/e2e/**
       - tests/e2e/**
       - .github/workflows/e2e.yml
@@ -36,7 +37,9 @@ on:
 permissions:
   contents: read
 concurrency:
-  group: e2e-${{ github.event.pull_request.number || github.ref }}
+  # Include the dispatch profile so two manual runs of different profiles on
+  # the same branch don't cancel each other.
+  group: e2e-${{ github.event.pull_request.number || github.ref }}-${{ inputs.profile || 'pr' }}
   cancel-in-progress: true
 env:
   # Checkout the PR head, not the merge ref: Argo CD can only fetch commits
@@ -47,11 +50,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     outputs:
-      exareme2: ${{ steps.map.outputs.exareme2 }}
-      mip-stack: ${{ steps.map.outputs.mip-stack }}
-      eck: ${{ steps.map.outputs.eck }}
-      haproxy: ${{ steps.map.outputs.haproxy }}
-      datacatalog: ${{ steps.map.outputs.datacatalog }}
+      profiles: ${{ steps.map.outputs.profiles }}
       render: ${{ steps.map.outputs.render }}
       same_repo: ${{ steps.map.outputs.same_repo }}
     steps:
@@ -68,16 +67,22 @@ jobs:
         run: |
           set -euo pipefail
           if [[ "$EVENT" == "workflow_dispatch" ]]; then
+            out=""
             for k in exareme2 mip-stack eck haproxy datacatalog render; do
               if [[ "$DISPATCH_PROFILE" == "$k" || "$DISPATCH_PROFILE" == "all" ]]; then
-                echo "$k=true" >> "$GITHUB_OUTPUT"
+                out+="$k=true"$'\n'
               else
-                echo "$k=false" >> "$GITHUB_OUTPUT"
+                out+="$k=false"$'\n'
               fi
             done
           else
-            bash scripts/e2e/changed-profiles.sh origin/main | tee -a "$GITHUB_OUTPUT"
+            out=$(bash scripts/e2e/changed-profiles.sh origin/main)
           fi
+          echo "$out" | tee -a "$GITHUB_OUTPUT"
+          # JSON array of requested kind profiles — drives the e2e matrix so
+          # unrequested profiles never allocate a runner.
+          profiles=$(echo "$out" | awk -F= '$2=="true" && $1!="render" {printf "\"%s\",", $1}' | sed 's/,$//')
+          echo "profiles=[${profiles}]" >> "$GITHUB_OUTPUT"
           echo "same_repo=$SAME_REPO" >> "$GITHUB_OUTPUT"
           if [[ "$SAME_REPO" != "true" ]]; then
             echo "::notice::Fork PR: kind e2e profiles are skipped (Argo CD cannot fetch fork commits)."
@@ -85,26 +90,19 @@ jobs:
 
   e2e:
     needs: changes
-    if: needs.changes.outputs.same_repo == 'true'
+    if: needs.changes.outputs.same_repo == 'true' && needs.changes.outputs.profiles != '[]'
     strategy:
       fail-fast: false
       matrix:
-        profile: [exareme2, mip-stack, eck, haproxy, datacatalog]
+        profile: ${{ fromJSON(needs.changes.outputs.profiles) }}
     name: e2e-${{ matrix.profile }}
     runs-on: ubuntu-latest
-    timeout-minutes: 40
+    timeout-minutes: 50
     steps:
-      - name: Check whether this profile is requested
-        id: gate
-        env:
-          WANTED: ${{ needs.changes.outputs[matrix.profile] }}
-        run: echo "run=$WANTED" >> "$GITHUB_OUTPUT"
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
-        if: steps.gate.outputs.run == 'true'
         with:
           ref: ${{ env.E2E_REF }}
       - name: Install kustomize (pinned + sha256 verified)
-        if: steps.gate.outputs.run == 'true'
         env:
           KUSTOMIZE_VERSION: v5.8.1
           KUSTOMIZE_SHA256: 029a7f0f4e1932c52a0476cf02a0fd855c0bb85694b82c338fc648dcb53a819d
@@ -118,7 +116,6 @@ jobs:
           sudo install -m 0755 kustomize /usr/local/bin/kustomize
           rm -f "$tarball" kustomize
       - name: Install yq (pinned + sha256 verified)
-        if: steps.gate.outputs.run == 'true'
         env:
           YQ_VERSION: v4.53.3
           YQ_SHA256: b4077cab0f9ee5ce8381e602d090daa69a0afb7e57eb9a5b20e9cb416d7f6794
@@ -132,21 +129,20 @@ jobs:
           sudo install -m 0755 yq_linux_amd64 /usr/local/bin/yq
           rm -f "$tarball" yq_linux_amd64
       - uses: helm/kind-action@ef37e7f390d99f746eb8b610417061a60e82a6cc  # v1.14.0
-        if: steps.gate.outputs.run == 'true'
         with:
           cluster_name: mip-e2e
           wait: 120s
-          # scripts/e2e/lib.sh recreates the cluster with 1 control-plane +
-          # 3 workers (argocd redis-ha hard anti-affinity needs 3 nodes).
+          # 1 control-plane + 3 workers (argocd redis-ha hard anti-affinity
+          # needs 3 schedulable nodes); scripts/e2e/lib.sh reuses it as-is.
+          config: tests/e2e/kind/cluster.yaml
       - name: Run e2e profile
-        if: steps.gate.outputs.run == 'true'
         env:
           PROFILE: ${{ matrix.profile }}
           CLUSTER: mip-e2e
           KEEP: '1'  # let kind-action handle teardown
         run: bash scripts/e2e/run-e2e.sh
       - name: Dump diagnostics on failure
-        if: failure() && steps.gate.outputs.run == 'true'
+        if: failure()
         run: bash scripts/e2e/dump-diagnostics.sh "${{ matrix.profile }}" || true
 
   render:
@@ -191,4 +187,5 @@ jobs:
           echo "OK: federation-A renders"
           kustomize build tests/e2e/federation >/dev/null
           kustomize build tests/e2e/datacatalog >/dev/null
+          kustomize build tests/e2e/eck >/dev/null
           echo "OK: CI overlays render"

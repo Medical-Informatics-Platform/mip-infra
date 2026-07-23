@@ -13,6 +13,8 @@
 
 NS=argocd-mip-team
 GATEWAY_API_VERSION=v1.3.0
+# In-cluster probe image shared by the smoke and e2e tests.
+PROBE_IMAGE=curlimages/curl:8.10.1
 
 need() { command -v "$1" >/dev/null 2>&1 || { echo "missing: $1" >&2; exit 2; }; }
 step() { printf '\n=== %s\n' "$*"; }
@@ -83,16 +85,26 @@ install_argo_overlay() {
     | kubectl apply --server-side --force-conflicts -f -
 }
 
+# wait_rollouts <namespace> <timeout> <workload...>
+wait_rollouts() {
+  local ns=$1 timeout=$2 obj
+  shift 2
+  for obj in "$@"; do
+    kubectl -n "$ns" rollout status "$obj" --timeout="$timeout"
+  done
+}
+
 wait_argo_rollouts() {
   # Wait long enough for image pulls on a cold kind node.
-  kubectl -n "$NS" rollout status statefulset/argocd-application-controller --timeout=300s
-  kubectl -n "$NS" rollout status statefulset/argocd-redis-ha-server      --timeout=300s
-  kubectl -n "$NS" rollout status deploy/argocd-server                     --timeout=300s
-  kubectl -n "$NS" rollout status deploy/argocd-repo-server                --timeout=300s
-  kubectl -n "$NS" rollout status deploy/argocd-redis-ha-haproxy           --timeout=300s
-  kubectl -n "$NS" rollout status deploy/argocd-dex-server                 --timeout=300s
-  kubectl -n "$NS" rollout status deploy/argocd-applicationset-controller  --timeout=300s
-  kubectl -n "$NS" rollout status deploy/argocd-notifications-controller   --timeout=300s
+  wait_rollouts "$NS" 300s \
+    statefulset/argocd-application-controller \
+    statefulset/argocd-redis-ha-server \
+    deploy/argocd-server \
+    deploy/argocd-repo-server \
+    deploy/argocd-redis-ha-haproxy \
+    deploy/argocd-dex-server \
+    deploy/argocd-applicationset-controller \
+    deploy/argocd-notifications-controller
 }
 
 apply_static_appprojects() {

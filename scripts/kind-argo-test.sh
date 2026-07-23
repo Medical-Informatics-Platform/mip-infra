@@ -139,12 +139,12 @@ NETPOL_TEST_NS=netpol-probe
 ALLOWLISTED_PROBE=allowlisted-probe
 kubectl create namespace "$NETPOL_TEST_NS" --dry-run=client -o yaml | kubectl apply -f -
 kubectl -n "$NETPOL_TEST_NS" run probe \
-  --image=curlimages/curl:8.10.1 \
+  --image="$PROBE_IMAGE" \
   --restart=Never --command -- sleep 600 >/dev/null
 kubectl -n "$NETPOL_TEST_NS" wait pod/probe --for=condition=Ready --timeout=120s
 kubectl -n "$NS" run "$ALLOWLISTED_PROBE" \
   --labels='app.kubernetes.io/name=argocd-server' \
-  --image=curlimages/curl:8.10.1 \
+  --image="$PROBE_IMAGE" \
   --restart=Never --command -- sleep 600 >/dev/null
 kubectl -n "$NS" wait pod/"$ALLOWLISTED_PROBE" --for=condition=Ready --timeout=120s
 

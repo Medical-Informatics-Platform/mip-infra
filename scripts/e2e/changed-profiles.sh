@@ -18,6 +18,11 @@ set -euo pipefail
 
 BASE=${1:-origin/main}
 
+# Fail closed: compute the diff up front so a git failure (missing base ref,
+# shallow clone) aborts the script instead of silently mapping to zero
+# profiles inside a process substitution.
+changed_files=$(git diff --name-only "$BASE"...HEAD)
+
 exareme2=false
 mip_stack=false
 eck=false
@@ -52,11 +57,15 @@ while IFS= read -r f; do
     base/mip-infrastructure/rbac/haproxy-public-rbac.yaml) haproxy=true ;;
     common/datacatalog/*|tests/e2e/datacatalog/*)          datacatalog=true ;;
 
+    # --- federation AppProject template: the federation profiles helm-template
+    #     it and production regenerates it per federation ---
+    projects/templates/*)                                  mip_stack=true ;;
+
     # --- render-only (submariner cannot be meaningfully e2e-tested on a
     #     single kind cluster; its bumped chart versions are build-checked) ---
     common/submariner/*)                                   render=true ;;
   esac
-done < <(git diff --name-only "$BASE"...HEAD)
+done <<< "$changed_files"
 
 # mip-stack deploys exareme2 too; no need to run the smaller profile as well.
 if [[ "$mip_stack" == "true" ]]; then

@@ -1,0 +1,71 @@
+---
+# CI overlay on the real eck-stack Application: everything (project,
+# destination, syncPolicy, PSA labels) is inherited from production; only the
+# inline helm values are replaced to fit a 16 GB runner (1 ES node, small
+# heap/PVC) and to disable the beats, whose privileged hostPath access adds
+# nothing to a version-bump test. The ECK operator itself is installed by
+# scripts/e2e/run-e2e.sh at the version pinned in
+# common/monitoring/eck/values.yaml.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources: [../../../common/monitoring]
+patches:
+  - target:
+      kind: Application
+      name: eck-stack
+    patch: |-
+      - op: replace
+        path: /spec/source/helm/values
+        value: |
+          operator:
+            namespace: elastic-system
+          elasticsearch:
+            nodeSets:
+              - name: default
+                count: 1
+                config:
+                  node.store.allow_mmap: false
+                podTemplate:
+                  metadata:
+                    labels: {}
+                  spec:
+                    containers:
+                      - name: elasticsearch
+                        resources:
+                          requests:
+                            cpu: 500m
+                            memory: 1Gi
+                          limits:
+                            cpu: 2
+                            memory: 1Gi
+                volumeClaimTemplates:
+                  - metadata:
+                      name: elasticsearch-data
+                    spec:
+                      accessModes: [ReadWriteOnce]
+                      resources:
+                        requests:
+                          storage: 2Gi
+                      storageClassName: ceph-corbo-cephfs
+          kibana:
+            count: 1
+            podTemplate:
+              metadata:
+                labels: {}
+              spec:
+                containers:
+                  - name: kibana
+                    resources:
+                      requests:
+                        cpu: 100m
+                        memory: 512Mi
+                      limits:
+                        cpu: 1
+                        memory: 1Gi
+          observability:
+            metricbeat:
+              enabled: false
+            filebeat:
+              enabled: false
+          alertNotifier:
+            enabled: false

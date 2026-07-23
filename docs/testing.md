@@ -109,7 +109,7 @@ comply:
 |---|---|
 | StorageClasses `ceph-corbo-cephfs`, `ceph-corbo-cephfs-retain` (CephFS, RWX) | same names backed by `rancher.io/local-path`; RWX claims downgraded to RWO via CI values |
 | MetalLB pool `pool-no-auto` with VIP 148.187.143.44 | MetalLB installed with a /32 pool containing exactly that VIP (haproxy profile) |
-| cert-manager + letsencrypt ClusterIssuers | cert-manager installed; letsencrypt issuers apply but ACME readiness is never load-bearing |
+| cert-manager + letsencrypt ClusterIssuers | cert-manager installed; letsencrypt issuers apply but ACME readiness is never load-bearing (a CI-only argocd-cm health override keeps Ready=False ClusterIssuers from degrading the app) |
 | Keycloak at iam.ebrains.eu | `keycloak.enabled: false` + dummy `keycloak-credentials` (authentication off) |
 | public ingress hosts | ingress disabled in federation/datacatalog profiles; exercised by the haproxy profile instead |
 | interactive `scripts/gen_secrets.sh` | non-interactive `scripts/e2e/ci-secrets.sh` |

@@ -8,6 +8,7 @@ on:
       - base/argo-projects/argo-projects.yaml
       - projects/static/**
       - scripts/kind-argo-test.sh
+      - scripts/e2e/lib.sh  # sourced by kind-argo-test.sh
       - .github/workflows/kind-argo-smoke.yml
   workflow_dispatch: {}
 permissions:

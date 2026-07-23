@@ -44,8 +44,6 @@ source "$REPO_ROOT/scripts/e2e/lib.sh"
 CERT_MANAGER_VERSION=v1.19.1
 # renovate: datasource=github-releases depName=metallb/metallb
 METALLB_VERSION=v0.15.2
-# Same pinned probe image as scripts/kind-argo-test.sh.
-PROBE_IMAGE=curlimages/curl:8.10.1
 
 need kind; need kubectl; need kustomize; need docker; need git; need yq
 case "$PROFILE" in exareme2|mip-stack) need helm ;; esac
@@ -66,12 +64,14 @@ trap cleanup EXIT
 
 # render_and_rewrite <kustomize-dir-or-manifest-file> <out-file> <min-rewrites>
 #
-# Renders the source, rewrites `targetRevision: main` to HEAD_SHA and applies
-# the check_zero pattern (cf. mip-dev-cluster's prepare-mip-infra-fork.sh):
-# hard-fails if fewer than <min-rewrites> lines were rewritten, if any
-# `targetRevision: main` survives, or if the render references the private
-# mip-deployments repo (unreachable from CI). Upstream chart pins are 40-hex
-# SHAs and can never match the rewrite pattern.
+# Renders the source and rewrites `targetRevision: main` to HEAD_SHA — but
+# only on sources whose repoURL is this repo, so a future Application
+# tracking another repo's `main` can never be pointed at a mip-infra commit.
+# Then applies the check_zero pattern (cf. mip-dev-cluster's
+# prepare-mip-infra-fork.sh): hard-fails if fewer than <min-rewrites> lines
+# were rewritten, if any `targetRevision: main` survives (loud stop for the
+# hypothetical other-repo case), or if the render references the private
+# mip-deployments repo (unreachable from CI).
 render_and_rewrite() {
   local src=$1 out=$2 expect=$3
   if [[ -d "$src" ]]; then
@@ -79,8 +79,16 @@ render_and_rewrite() {
   else
     cp "$src" "$out"
   fi
-  sed -i.bak -E "s|^([[:space:]]*targetRevision:)[[:space:]]+main[[:space:]]*$|\1 ${HEAD_SHA}|" "$out"
-  rm -f "$out.bak"
+  HEAD_SHA="$HEAD_SHA" yq -i '
+    (.spec.source
+      | select((.repoURL // "" | test("Medical-Informatics-Platform/mip-infra"))
+               and .targetRevision == "main")
+    ).targetRevision |= strenv(HEAD_SHA) |
+    (.spec.sources[]?
+      | select((.repoURL // "" | test("Medical-Informatics-Platform/mip-infra"))
+               and .targetRevision == "main")
+    ).targetRevision |= strenv(HEAD_SHA)
+  ' "$out"
 
   local got
   got=$(grep -c "targetRevision: ${HEAD_SHA}" "$out" || true)
@@ -115,7 +123,9 @@ wait_app() {
               -o jsonpath='{range .status.conditions[*]}{.type}: {.message}{"\n"}{end}' 2>/dev/null || true)
     if grep -qE 'ComparisonError|InvalidSpecError' <<<"$conds"; then
       err_polls=$((err_polls + 1))
-      if (( err_polls >= 6 )); then
+      # 3 min of consecutive errors: long enough to ride out the cold first
+      # clone of a chart repo, short enough to fail fast on a bad SHA.
+      if (( err_polls >= 18 )); then
         echo "--- application $app conditions:" >&2
         echo "$conds" >&2
         kubectl -n "$NS" logs deploy/argocd-repo-server --tail=50 >&2 || true
@@ -130,9 +140,16 @@ wait_app() {
 }
 
 # ensure_probe <namespace> — long-lived in-cluster curl pod, one per namespace.
+# A leftover pod from a previous KEEP=1 run may have Completed its sleep
+# (restart=Never can never become Ready again), so recreate unless Running.
 ensure_probe() {
-  local ns=$1
-  if ! kubectl -n "$ns" get pod e2e-probe >/dev/null 2>&1; then
+  local ns=$1 phase
+  phase=$(kubectl -n "$ns" get pod e2e-probe -o jsonpath='{.status.phase}' 2>/dev/null || true)
+  if [[ -n "$phase" && "$phase" != "Running" && "$phase" != "Pending" ]]; then
+    kubectl -n "$ns" delete pod e2e-probe --wait=true >/dev/null
+    phase=""
+  fi
+  if [[ -z "$phase" ]]; then
     kubectl -n "$ns" run e2e-probe --image="$PROBE_IMAGE" \
       --restart=Never --command -- sleep 3600 >/dev/null
   fi
@@ -221,10 +238,11 @@ check_exareme2() {
   wait_app federation-a-exareme2 900
 
   step "Verify exareme2 workloads"
-  kubectl -n "$FED_NS_TARGET" rollout status deploy/exaflow-controller-deployment --timeout=120s
-  kubectl -n "$FED_NS_TARGET" rollout status statefulset/exaflow-localworker --timeout=120s
-  kubectl -n "$FED_NS_TARGET" rollout status statefulset/exaflow-globalworker --timeout=120s
-  kubectl -n "$FED_NS_TARGET" rollout status deploy/exaflow-aggregation-server-deployment --timeout=120s
+  wait_rollouts "$FED_NS_TARGET" 120s \
+    deploy/exaflow-controller-deployment \
+    statefulset/exaflow-localworker \
+    statefulset/exaflow-globalworker \
+    deploy/exaflow-aggregation-server-deployment
   assert_pvcs_bound "$FED_NS_TARGET"
 
   step "Verify exareme2 service responses"
@@ -244,8 +262,7 @@ check_mip_stack() {
   step "Verify mip-stack workloads"
   # The chart defines no probes, so Argo 'Healthy' is weak here — rollout
   # status + direct service checks below carry the signal.
-  kubectl -n "$FED_NS_TARGET" rollout status deploy/platform-backend --timeout=300s
-  kubectl -n "$FED_NS_TARGET" rollout status deploy/platform-ui --timeout=300s
+  wait_rollouts "$FED_NS_TARGET" 300s deploy/platform-backend deploy/platform-ui
 
   step "Verify postgres accepts connections"
   retry 12 10 "postgres not ready" \
@@ -301,12 +318,12 @@ profile_eck() {
   kubectl apply --server-side -f "https://download.elastic.co/downloads/eck/${op_ver}/operator.yaml"
   kubectl -n elastic-system rollout status statefulset/elastic-operator --timeout=300s
 
-  step "Apply e2e-eck-stack Application"
-  render_and_rewrite "$REPO_ROOT/tests/e2e/eck/application.yaml" "$WORKDIR/eck.yaml" 1
+  step "Apply eck-stack Application (CI overlay: shrunk values)"
+  render_and_rewrite "$REPO_ROOT/tests/e2e/eck" "$WORKDIR/eck.yaml" 1
   kubectl apply -f "$WORKDIR/eck.yaml"
   # Argo ships built-in Lua health for Elastic CRDs, so Healthy already
   # means the ES cluster reports green — asserted explicitly below anyway.
-  wait_app e2e-eck-stack 900
+  wait_app eck-stack 900
 
   step "Verify Elasticsearch/Kibana CRD-reported health"
   retry 42 10 "elasticsearch not green" \
@@ -331,15 +348,26 @@ profile_haproxy() {
   step "Install cert-manager (the synced manifests contain cert-manager CRs)"
   kubectl apply --server-side -f \
     "https://github.com/cert-manager/cert-manager/releases/download/${CERT_MANAGER_VERSION}/cert-manager.yaml"
-  kubectl -n cert-manager rollout status deploy/cert-manager --timeout=300s
-  kubectl -n cert-manager rollout status deploy/cert-manager-cainjector --timeout=300s
-  kubectl -n cert-manager rollout status deploy/cert-manager-webhook --timeout=300s
+  wait_rollouts cert-manager 300s \
+    deploy/cert-manager deploy/cert-manager-cainjector deploy/cert-manager-webhook
+
+  # ACME account registration from an ephemeral CI cluster is best-effort
+  # (shared runner egress IPs hit Let's Encrypt account rate limits), but
+  # Argo's built-in health marks Ready=False ClusterIssuers Degraded, which
+  # would block the Healthy wait below. CI-only: neutralize ClusterIssuer
+  # health so ACME can never gate the profile. Their existence is still
+  # asserted after the sync.
+  step "CI-only: make ClusterIssuer health non-load-bearing"
+  kubectl -n "$NS" patch configmap argocd-cm --type merge -p '{
+    "data": {
+      "resource.customizations.health.cert-manager.io_ClusterIssuer": "hs = {}\nhs.status = \"Healthy\"\nhs.message = \"e2e: ClusterIssuer health ignored (ACME is best-effort in CI)\"\nreturn hs\n"
+    }
+  }'
 
   step "Install MetalLB + production pool name with a CI /32"
   kubectl apply --server-side -f \
     "https://raw.githubusercontent.com/metallb/metallb/${METALLB_VERSION}/config/manifests/metallb-native.yaml"
-  kubectl -n metallb-system rollout status deploy/controller --timeout=300s
-  kubectl -n metallb-system rollout status daemonset/speaker --timeout=300s
+  wait_rollouts metallb-system 300s deploy/controller daemonset/speaker
   # The admission webhook needs its cert injected before CRs apply cleanly.
   retry 12 10 "metallb webhook not admitting IPAddressPool" \
     kubectl apply -f "$REPO_ROOT/tests/e2e/kind/metallb-pool.yaml"
@@ -366,6 +394,9 @@ profile_haproxy() {
   kubectl -n ingress-nginx wait certificate/haproxy-public-default-tls \
     --for=condition=Ready --timeout=300s
   echo "OK: default certificate issued (self-signed issuer)"
+  # ACME issuers must exist (synced); their Ready state is best-effort in CI.
+  kubectl get clusterissuer letsencrypt-public letsencrypt-public-staging >/dev/null
+  echo "OK: letsencrypt ClusterIssuers exist"
 
   step "Verify real ingress traffic against the echo backend"
   kubectl apply -f "$REPO_ROOT/common/haproxy-ingress/test-ingress.yaml"
