@@ -93,6 +93,18 @@
       datasourceTemplate: 'github-release-attachments',
       extractVersionTemplate: '^kustomize/(?<version>.+)$',
     },
+    // Cluster add-ons the e2e profiles install on kind (cert-manager,
+    // MetalLB, ...): annotated version pins in scripts/e2e/*.sh.
+    // A bump PR triggers the matching e2e profile via the paths in
+    // .github/workflows/e2e.yml (mapping: scripts/e2e/changed-profiles.sh).
+    {
+      customType: 'regex',
+      description: 'Annotated *_VERSION pins in e2e scripts',
+      managerFilePatterns: ['/^scripts/e2e/.+\\.sh$/'],
+      matchStrings: [
+        '# renovate: datasource=(?<datasource>\\S+) depName=(?<depName>\\S+)\\n[A-Z_]+_VERSION=(?<currentValue>\\S+)',
+      ],
+    },
   ],
 
   packageRules: [

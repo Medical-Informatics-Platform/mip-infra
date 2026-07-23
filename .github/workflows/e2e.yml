@@ -1,0 +1,194 @@
+---
+# Component-scoped e2e: on PRs that bump a cluster component (typically
+# Renovate), deploy that component on an ephemeral kind cluster THROUGH Argo
+# CD at the PR's revision and assert service-level health. See docs/testing.md.
+#
+# The `paths:` list below must stay a superset of the mapping in
+# scripts/e2e/changed-profiles.sh (the single source of truth), which in turn
+# mirrors the managerFilePatterns in renovate.json5.
+#
+# Only same-repo branches can be e2e-tested: Argo CD inside kind fetches the
+# PR head SHA from the public repo, which is impossible for fork commits.
+# Renovate PRs are same-repo.
+name: Component e2e (kind + Argo CD)
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - deployments/shared-apps/**
+      - deployments/local/federations/**
+      - deployments/hybrid/federations/**
+      - common/haproxy-ingress/**
+      - common/monitoring/**
+      - common/datacatalog/**
+      - common/submariner/**
+      - base/mip-infrastructure/rbac/haproxy-public-rbac.yaml
+      - scripts/e2e/**
+      - tests/e2e/**
+      - .github/workflows/e2e.yml
+  workflow_dispatch:
+    inputs:
+      profile:
+        description: Profile to run
+        required: true
+        type: choice
+        options: [exareme2, mip-stack, eck, haproxy, datacatalog, render, all]
+permissions:
+  contents: read
+concurrency:
+  group: e2e-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+env:
+  # Checkout the PR head, not the merge ref: Argo CD can only fetch commits
+  # that exist on the branch (refs/pull/N/merge is not advertised).
+  E2E_REF: ${{ github.event.pull_request.head.sha || github.sha }}
+jobs:
+  changes:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      exareme2: ${{ steps.map.outputs.exareme2 }}
+      mip-stack: ${{ steps.map.outputs.mip-stack }}
+      eck: ${{ steps.map.outputs.eck }}
+      haproxy: ${{ steps.map.outputs.haproxy }}
+      datacatalog: ${{ steps.map.outputs.datacatalog }}
+      render: ${{ steps.map.outputs.render }}
+      same_repo: ${{ steps.map.outputs.same_repo }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          ref: ${{ env.E2E_REF }}
+          fetch-depth: 0
+      - name: Map changed files to e2e profiles
+        id: map
+        env:
+          EVENT: ${{ github.event_name }}
+          DISPATCH_PROFILE: ${{ inputs.profile }}
+          SAME_REPO: ${{ github.event_name == 'workflow_dispatch' || github.event.pull_request.head.repo.full_name == github.repository }}
+        run: |
+          set -euo pipefail
+          if [[ "$EVENT" == "workflow_dispatch" ]]; then
+            for k in exareme2 mip-stack eck haproxy datacatalog render; do
+              if [[ "$DISPATCH_PROFILE" == "$k" || "$DISPATCH_PROFILE" == "all" ]]; then
+                echo "$k=true" >> "$GITHUB_OUTPUT"
+              else
+                echo "$k=false" >> "$GITHUB_OUTPUT"
+              fi
+            done
+          else
+            bash scripts/e2e/changed-profiles.sh origin/main | tee -a "$GITHUB_OUTPUT"
+          fi
+          echo "same_repo=$SAME_REPO" >> "$GITHUB_OUTPUT"
+          if [[ "$SAME_REPO" != "true" ]]; then
+            echo "::notice::Fork PR: kind e2e profiles are skipped (Argo CD cannot fetch fork commits)."
+          fi
+
+  e2e:
+    needs: changes
+    if: needs.changes.outputs.same_repo == 'true'
+    strategy:
+      fail-fast: false
+      matrix:
+        profile: [exareme2, mip-stack, eck, haproxy, datacatalog]
+    name: e2e-${{ matrix.profile }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - name: Check whether this profile is requested
+        id: gate
+        env:
+          WANTED: ${{ needs.changes.outputs[matrix.profile] }}
+        run: echo "run=$WANTED" >> "$GITHUB_OUTPUT"
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        if: steps.gate.outputs.run == 'true'
+        with:
+          ref: ${{ env.E2E_REF }}
+      - name: Install kustomize (pinned + sha256 verified)
+        if: steps.gate.outputs.run == 'true'
+        env:
+          KUSTOMIZE_VERSION: v5.8.1
+          KUSTOMIZE_SHA256: 029a7f0f4e1932c52a0476cf02a0fd855c0bb85694b82c338fc648dcb53a819d
+        run: |
+          set -euo pipefail
+          tarball=kustomize_${KUSTOMIZE_VERSION}_linux_amd64.tar.gz
+          url=https://github.com/kubernetes-sigs/kustomize/releases/download/kustomize%2F${KUSTOMIZE_VERSION}/${tarball}
+          curl -sSfLo "$tarball" "$url"
+          echo "${KUSTOMIZE_SHA256}  ${tarball}" | sha256sum -c -
+          tar -xzf "$tarball" kustomize
+          sudo install -m 0755 kustomize /usr/local/bin/kustomize
+          rm -f "$tarball" kustomize
+      - name: Install yq (pinned + sha256 verified)
+        if: steps.gate.outputs.run == 'true'
+        env:
+          YQ_VERSION: v4.53.3
+          YQ_SHA256: b4077cab0f9ee5ce8381e602d090daa69a0afb7e57eb9a5b20e9cb416d7f6794
+        run: |
+          set -euo pipefail
+          tarball=yq_linux_amd64.tar.gz
+          url=https://github.com/mikefarah/yq/releases/download/${YQ_VERSION}/${tarball}
+          curl -sSfLo "$tarball" "$url"
+          echo "${YQ_SHA256}  ${tarball}" | sha256sum -c -
+          tar -xzf "$tarball" ./yq_linux_amd64
+          sudo install -m 0755 yq_linux_amd64 /usr/local/bin/yq
+          rm -f "$tarball" yq_linux_amd64
+      - uses: helm/kind-action@ef37e7f390d99f746eb8b610417061a60e82a6cc  # v1.14.0
+        if: steps.gate.outputs.run == 'true'
+        with:
+          cluster_name: mip-e2e
+          wait: 120s
+          # scripts/e2e/lib.sh recreates the cluster with 1 control-plane +
+          # 3 workers (argocd redis-ha hard anti-affinity needs 3 nodes).
+      - name: Run e2e profile
+        if: steps.gate.outputs.run == 'true'
+        env:
+          PROFILE: ${{ matrix.profile }}
+          CLUSTER: mip-e2e
+          KEEP: '1'  # let kind-action handle teardown
+        run: bash scripts/e2e/run-e2e.sh
+      - name: Dump diagnostics on failure
+        if: failure() && steps.gate.outputs.run == 'true'
+        run: bash scripts/e2e/dump-diagnostics.sh "${{ matrix.profile }}" || true
+
+  render:
+    needs: changes
+    if: needs.changes.outputs.render == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          ref: ${{ env.E2E_REF }}
+      - name: Install kustomize (pinned + sha256 verified)
+        env:
+          KUSTOMIZE_VERSION: v5.8.1
+          KUSTOMIZE_SHA256: 029a7f0f4e1932c52a0476cf02a0fd855c0bb85694b82c338fc648dcb53a819d
+        run: |
+          set -euo pipefail
+          tarball=kustomize_${KUSTOMIZE_VERSION}_linux_amd64.tar.gz
+          url=https://github.com/kubernetes-sigs/kustomize/releases/download/kustomize%2F${KUSTOMIZE_VERSION}/${tarball}
+          curl -sSfLo "$tarball" "$url"
+          echo "${KUSTOMIZE_SHA256}  ${tarball}" | sha256sum -c -
+          tar -xzf "$tarball" kustomize
+          sudo install -m 0755 kustomize /usr/local/bin/kustomize
+          rm -f "$tarball" kustomize
+      - name: Render checks
+        run: |
+          set -euo pipefail
+          # Submariner: a live e2e needs a second cluster and an IPsec mesh —
+          # meaningless on kind. Building with --enable-helm still verifies
+          # the Renovate-bumped chart versions exist upstream and template
+          # cleanly against our values.
+          kustomize build --enable-helm common/submariner/broker >/tmp/broker.yaml
+          test -s /tmp/broker.yaml
+          kustomize build --enable-helm common/submariner/operator >/tmp/operator.yaml
+          test -s /tmp/operator.yaml
+          echo "OK: submariner broker + operator render"
+          # Hybrid federation overrides deploy on a cluster CI cannot reach;
+          # at least prove the composition still builds.
+          kustomize build deployments/hybrid/federations/federation-Z/mip-infrastructure >/dev/null
+          echo "OK: federation-Z renders"
+          kustomize build deployments/local/federations/federation-A >/dev/null
+          echo "OK: federation-A renders"
+          kustomize build tests/e2e/federation >/dev/null
+          kustomize build tests/e2e/datacatalog >/dev/null
+          echo "OK: CI overlays render"
