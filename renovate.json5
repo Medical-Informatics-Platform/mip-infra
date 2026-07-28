@@ -4,9 +4,16 @@
     'config:recommended',
     ':dependencyDashboard',
     ':semanticCommits',
+    // Add Merge Confidence badges (Age, Adoption, Passing, Confidence) to PR bodies.
+    // Data is served free by Mend to the hosted Renovate GitHub App.
+    'mergeConfidence:all-badges',
   ],
   automerge: false,
   labels: ['dependencies'],
+
+  // Only propose an update once the release has been public for 3 days, to avoid
+  // pulling in versions that get yanked or hot-fixed shortly after publishing.
+  minimumReleaseAge: '2 days',
 
   // GitHub Actions are managed by Dependabot (.github/dependabot.yml), so
   // disable Renovate's github-actions manager to avoid duplicate PRs.
