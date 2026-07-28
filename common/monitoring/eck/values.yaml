@@ -86,7 +86,7 @@ elasticsearch:
                   cpu: 500m
                   memory: 2Gi
                 limits:
-                  cpu: 2
+                  cpu: '2'
                   memory: 2Gi
       volumeClaimTemplates:
         - metadata:
@@ -121,7 +121,7 @@ kibana:
               cpu: 100m
               memory: 512Mi
             limits:
-              cpu: 1
+              cpu: '1'
               memory: 1Gi
   ingress:
     enabled: false

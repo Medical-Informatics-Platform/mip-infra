@@ -36,7 +36,7 @@ patches:
                             cpu: 500m
                             memory: 1Gi
                           limits:
-                            cpu: 2
+                            cpu: '2'
                             memory: 1Gi
                 volumeClaimTemplates:
                   - metadata:
@@ -58,7 +58,7 @@ patches:
                         cpu: 100m
                         memory: 512Mi
                       limits:
-                        cpu: 1
+                        cpu: '1'
                         memory: 1Gi
           observability:
             metricbeat:
