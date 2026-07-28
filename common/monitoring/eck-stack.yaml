@@ -26,8 +26,8 @@ spec:
               config:
                 node.store.allow_mmap: false
               podTemplate:
-                metadata:
-                  labels: {}
+                # No empty metadata/labels maps: the ECK operator strips
+                # zero-value fields, leaving Argo CD permanently OutOfSync.
                 spec:
                   containers:
                     - name: elasticsearch

@@ -66,21 +66,18 @@ elasticsearch:
   version: 8.19.19
   labels: {}
   annotations: {}
-  http:
-    tls:
-      selfSignedCertificate:
-        disabled: false
-    service:
-      metadata:
-        annotations: {}
+  # No `http:` block: only set it to override operator defaults. Zero-value
+  # leaves (selfSignedCertificate.disabled: false, empty annotations) are
+  # stripped by the ECK operator's read-modify-write, so rendering them makes
+  # Argo CD permanently OutOfSync (selfHeal re-apply loop).
   nodeSets:
     - name: default
       count: 3
       config:
         node.store.allow_mmap: false
       podTemplate:
-        metadata:
-          labels: {}
+        # No `metadata:` here for the same reason — the operator drops
+        # empty labels/annotations maps.
         spec:
           containers:
             - name: elasticsearch
@@ -109,19 +106,13 @@ kibana:
   count: 1
   labels: {}
   annotations: {}
-  http:
-    service:
-      metadata:
-        annotations: {}
-    tls:
-      selfSignedCertificate:
-        disabled: false
+  # No `http:` / podTemplate `metadata:` blocks — see the elasticsearch note:
+  # the ECK operator strips zero-value leaves, which would keep Argo CD
+  # permanently OutOfSync.
   elasticsearchRef:
     name: elasticsearch-sample
   config: {}
   podTemplate:
-    metadata:
-      labels: {}
     spec:
       containers:
         - name: kibana

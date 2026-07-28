@@ -26,8 +26,8 @@ patches:
                 config:
                   node.store.allow_mmap: false
                 podTemplate:
-                  metadata:
-                    labels: {}
+                  # No empty metadata/labels maps — the operator strips them
+                  # and Argo CD would stay OutOfSync (see eck-stack.yaml).
                   spec:
                     containers:
                       - name: elasticsearch
@@ -50,8 +50,6 @@ patches:
           kibana:
             count: 1
             podTemplate:
-              metadata:
-                labels: {}
               spec:
                 containers:
                   - name: kibana
