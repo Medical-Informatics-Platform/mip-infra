@@ -1,0 +1,15 @@
+---
+# CI overlay on the real datacatalog Application. Only delta: append a CI
+# values file that empties global.publicHost so the chart renders no Ingress
+# (no ingress controller in this profile).
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources: [../../../common/datacatalog]
+patches:
+  - target:
+      kind: Application
+      name: datacatalog
+    patch: |-
+      - op: add
+        path: /spec/sources/0/helm/valueFiles/-
+        value: $values/tests/e2e/datacatalog/ci-values.yaml

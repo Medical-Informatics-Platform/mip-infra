@@ -1,0 +1,21 @@
+---
+# Aliases for the CephFS StorageClasses the production cluster provides
+# (see the cluster contract in docs/getting-started.md). On kind they are
+# backed by the local-path provisioner so production values that name these
+# classes work unmodified. local-path only supports ReadWriteOnce — RWX
+# claims are downgraded via CI-only values (tests/e2e/federation/).
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  name: ceph-corbo-cephfs
+provisioner: rancher.io/local-path
+volumeBindingMode: WaitForFirstConsumer
+reclaimPolicy: Delete
+---
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  name: ceph-corbo-cephfs-retain
+provisioner: rancher.io/local-path
+volumeBindingMode: WaitForFirstConsumer
+reclaimPolicy: Delete

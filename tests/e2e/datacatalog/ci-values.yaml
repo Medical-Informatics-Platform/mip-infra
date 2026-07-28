@@ -1,0 +1,5 @@
+---
+# CI-only datacatalog values for kind: an empty publicHost suppresses the
+# chart's Ingress (gated on `if .Values.global.publicHost`).
+global:
+  publicHost: ''

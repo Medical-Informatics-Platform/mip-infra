@@ -1,0 +1,14 @@
+---
+# kind topology for the e2e jobs: 1 control-plane + 3 workers, because the
+# argocd redis-ha server/haproxy run 3 replicas with hard pod anti-affinity
+# and the control-plane is tainted NoSchedule. Passed to helm/kind-action in
+# .github/workflows/e2e.yml so the cluster is created right the first time;
+# scripts/e2e/lib.sh (create_ha_kind_cluster) keeps an equivalent inline copy
+# for local runs and recreates any cluster with fewer than 4 nodes.
+kind: Cluster
+apiVersion: kind.x-k8s.io/v1alpha4
+nodes:
+  - role: control-plane
+  - role: worker
+  - role: worker
+  - role: worker

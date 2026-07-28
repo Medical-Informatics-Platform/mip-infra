@@ -1,0 +1,13 @@
+---
+# CI-only exareme2 values for kind. The csv-data volumeClaimTemplates of both
+# worker StatefulSets default to ReadWriteMany, which the local-path
+# provisioner backing the CI StorageClass aliases cannot provision.
+# Single-replica workers never share a volume, so RWO is equivalent here.
+storage:
+  cephfs:
+    localworker:
+      csvs:
+        accessModes: [ReadWriteOnce]
+    globalworker:
+      csvs:
+        accessModes: [ReadWriteOnce]

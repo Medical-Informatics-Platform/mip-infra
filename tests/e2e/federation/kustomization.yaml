@@ -1,0 +1,35 @@
+---
+# CI overlay on the real federation-A composition. Used only by
+# scripts/e2e/run-e2e.sh (profiles: exareme2, mip-stack) — invisible to the
+# production ApplicationSet.
+#
+# Deltas vs production, all kind-driven:
+#   - drop the sample exareme2-overlay Application (its payload is a
+#     documentation example that does not match the real chart)
+#   - append CI value files that shim CephFS RWX storage, the public
+#     ingress host and Keycloak (see the sibling *-ci-values.yaml)
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources: [../../../deployments/local/federations/federation-A]
+patches:
+  - patch: |-
+      apiVersion: argoproj.io/v1alpha1
+      kind: Application
+      metadata:
+        name: federation-a-exareme2-overlay
+        namespace: argocd-mip-team
+      $patch: delete
+  - target:
+      kind: Application
+      name: federation-a-exareme2
+    patch: |-
+      - op: add
+        path: /spec/sources/0/helm/valueFiles/-
+        value: $values/tests/e2e/federation/exareme2-ci-values.yaml
+  - target:
+      kind: Application
+      name: federation-a-mip-stack
+    patch: |-
+      - op: add
+        path: /spec/sources/0/helm/valueFiles/-
+        value: $values/tests/e2e/federation/mip-stack-ci-values.yaml
