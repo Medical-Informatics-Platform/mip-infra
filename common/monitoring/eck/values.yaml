@@ -63,7 +63,7 @@ elasticsearch:
   namespace: elastic-system
   name: elasticsearch-sample
   # renovate: datasource=docker depName=docker.elastic.co/elasticsearch/elasticsearch
-  version: 9.4.4
+  version: 8.19.18
   labels: {}
   annotations: {}
   http:
@@ -105,7 +105,7 @@ kibana:
   namespace: elastic-system
   name: kibana-sample
   # renovate: datasource=docker depName=docker.elastic.co/elasticsearch/elasticsearch
-  version: 9.4.4
+  version: 8.19.18
   count: 1
   labels: {}
   annotations: {}
@@ -145,7 +145,7 @@ observability:
   filebeat:
     enabled: false
     # renovate: datasource=docker depName=docker.elastic.co/elasticsearch/elasticsearch
-    version: 9.4.4
+    version: 8.19.18
     state:
       persistence:
         storageClassName: ceph-corbo-rbd-hdd-retain
@@ -197,7 +197,7 @@ observability:
   metricbeat:
     enabled: false
     # renovate: datasource=docker depName=docker.elastic.co/elasticsearch/elasticsearch
-    version: 9.4.4
+    version: 8.19.18
     state:
       persistence:
         storageClassName: ceph-corbo-rbd-hdd-retain

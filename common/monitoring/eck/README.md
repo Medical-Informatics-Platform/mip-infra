@@ -176,6 +176,16 @@ Filebeat autodiscovers pods via hints and forwards container logs **only** for n
 
 Changing Elasticsearch `storageClassName` or replacing full disks requires deleting the Elasticsearch PVCs (and typically the Elasticsearch CR) so ECK can recreate volumes — volumeClaimTemplate storage class is immutable.
 
+## Stack version upgrades
+
+Keep Elasticsearch, Kibana, Filebeat, and Metricbeat on the same version. Do **not** jump from early 8.x straight to 9.x in one change.
+
+Supported path from this chart's current pin (`8.19.18`):
+
+1. Land and verify the stack on the latest `8.19.x` (cluster green, Argo Healthy).
+2. Upgrade the **external** ECK operator in `kube-system` (Rancher / `mip-tds-observability`) from `2.x` to `3.4.x`. This chart does not manage the operator (`operator.enabled: false`). ECK 2.x cannot manage Stack 9.
+3. Only then bump the four stack `version` fields in `values.yaml` to the target `9.x` release (for example `9.4.4`).
+
 ## Uninstalling
 
 ```bash
