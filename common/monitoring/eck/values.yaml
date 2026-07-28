@@ -63,7 +63,7 @@ elasticsearch:
   namespace: elastic-system
   name: elasticsearch-sample
   # renovate: datasource=docker depName=docker.elastic.co/elasticsearch/elasticsearch
-  version: 9.4.4
+  version: 8.19.18
   labels: {}
   annotations: {}
   http:
@@ -98,14 +98,14 @@ elasticsearch:
             accessModes: [ReadWriteOnce]
             resources:
               requests:
-                storage: 10Gi
-            storageClassName: ceph-corbo-cephfs
+                storage: 50Gi
+            storageClassName: ceph-corbo-rbd-hdd-retain
 kibana:
   enabled: true
   namespace: elastic-system
   name: kibana-sample
   # renovate: datasource=docker depName=docker.elastic.co/elasticsearch/elasticsearch
-  version: 9.4.4
+  version: 8.19.18
   count: 1
   labels: {}
   annotations: {}
@@ -145,12 +145,27 @@ observability:
   filebeat:
     enabled: false
     # renovate: datasource=docker depName=docker.elastic.co/elasticsearch/elasticsearch
-    version: 9.4.4
+    version: 8.19.18
     state:
       persistence:
-        storageClassName: ceph-corbo-cephfs
+        storageClassName: ceph-corbo-rbd-hdd-retain
         size: 2Gi
     config:
+      # Keep federation-* namespace logs only; rollover early and delete after 14d.
+      setup.ilm.enabled: true
+      setup.ilm.overwrite: true
+      setup.ilm.policy:
+        phases:
+          hot:
+            min_age: 0ms
+            actions:
+              rollover:
+                max_age: 7d
+                max_primary_shard_size: 5gb
+          delete:
+            min_age: 14d
+            actions:
+              delete: {}
       filebeat:
         autodiscover:
           providers:
@@ -167,6 +182,7 @@ observability:
         - add_cloud_metadata: {}
         - add_host_metadata: {}
         - add_kubernetes_metadata: {}
+        - drop_event.when.not.contains.kubernetes.namespace: federation
     resources:
       requests:
         cpu: 100m
@@ -181,34 +197,60 @@ observability:
   metricbeat:
     enabled: false
     # renovate: datasource=docker depName=docker.elastic.co/elasticsearch/elasticsearch
-    version: 9.4.4
+    version: 8.19.18
     state:
       persistence:
-        storageClassName: ceph-corbo-cephfs
+        storageClassName: ceph-corbo-rbd-hdd-retain
         size: 2Gi
     config:
+      setup.ilm.enabled: true
+      setup.ilm.overwrite: true
+      setup.ilm.policy:
+        phases:
+          hot:
+            min_age: 0ms
+            actions:
+              rollover:
+                max_age: 7d
+                max_primary_shard_size: 5gb
+          delete:
+            min_age: 14d
+            actions:
+              delete: {}
       metricbeat:
         data_stream:
           enabled: true
         modules:
+          # Cluster/node metrics (no namespace); keep for capacity/health.
           - module: kubernetes
-            metricsets: [node, system, pod, container, volume]
-            period: 20s
+            metricsets: [node, system]
+            period: 60s
             host: ${NODE_NAME}
             hosts: ['https://${NODE_IP}:10250']
             ssl.verification_mode: none
             bearer_token_file: /var/run/secrets/kubernetes.io/serviceaccount/token
             processors:
               - add_kubernetes_metadata: {}
+          # Pod-level metrics only for namespaces containing "federation".
+          - module: kubernetes
+            metricsets: [pod]
+            period: 60s
+            host: ${NODE_NAME}
+            hosts: ['https://${NODE_IP}:10250']
+            ssl.verification_mode: none
+            bearer_token_file: /var/run/secrets/kubernetes.io/serviceaccount/token
+            processors:
+              - add_kubernetes_metadata: {}
+              - drop_event.when.not.contains.kubernetes.namespace: federation
           - module: kubernetes
             metricsets: [apiserver]
             hosts: ['https://${KUBERNETES_SERVICE_HOST}:${KUBERNETES_SERVICE_PORT}']
             ssl.certificate_authorities:
               - /var/run/secrets/kubernetes.io/serviceaccount/ca.crt
             bearer_token_file: /var/run/secrets/kubernetes.io/serviceaccount/token
-            period: 30s
+            period: 60s
           - module: system
-            period: 20s
+            period: 60s
             hostfs: /hostfs
             metricsets: [cpu, memory, network, diskio, filesystem]
       processors:

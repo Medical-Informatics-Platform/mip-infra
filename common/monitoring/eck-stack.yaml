@@ -19,6 +19,34 @@ spec:
         # (created by Argo via CreateNamespace=true) instead of kube-system.
         operator:
           namespace: elastic-system
+        elasticsearch:
+          nodeSets:
+            - name: default
+              count: 3
+              config:
+                node.store.allow_mmap: false
+              podTemplate:
+                metadata:
+                  labels: {}
+                spec:
+                  containers:
+                    - name: elasticsearch
+                      resources:
+                        requests:
+                          cpu: 500m
+                          memory: 2Gi
+                        limits:
+                          cpu: 2
+                          memory: 2Gi
+              volumeClaimTemplates:
+                - metadata:
+                    name: elasticsearch-data
+                  spec:
+                    accessModes: [ReadWriteOnce]
+                    resources:
+                      requests:
+                        storage: 50Gi
+                    storageClassName: ceph-corbo-rbd-hdd-retain
         observability:
           metricbeat:
             enabled: true
