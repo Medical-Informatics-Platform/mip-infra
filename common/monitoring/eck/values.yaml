@@ -63,24 +63,21 @@ elasticsearch:
   namespace: elastic-system
   name: elasticsearch-sample
   # renovate: datasource=docker depName=docker.elastic.co/elasticsearch/elasticsearch
-  version: 8.19.18
+  version: 8.19.19
   labels: {}
   annotations: {}
-  http:
-    tls:
-      selfSignedCertificate:
-        disabled: false
-    service:
-      metadata:
-        annotations: {}
+  # No `http:` block: only set it to override operator defaults. Zero-value
+  # leaves (selfSignedCertificate.disabled: false, empty annotations) are
+  # stripped by the ECK operator's read-modify-write, so rendering them makes
+  # Argo CD permanently OutOfSync (selfHeal re-apply loop).
   nodeSets:
     - name: default
       count: 3
       config:
         node.store.allow_mmap: false
       podTemplate:
-        metadata:
-          labels: {}
+        # No `metadata:` here for the same reason — the operator drops
+        # empty labels/annotations maps.
         spec:
           containers:
             - name: elasticsearch
@@ -89,7 +86,7 @@ elasticsearch:
                   cpu: 500m
                   memory: 2Gi
                 limits:
-                  cpu: 2
+                  cpu: '2'
                   memory: 2Gi
       volumeClaimTemplates:
         - metadata:
@@ -105,23 +102,17 @@ kibana:
   namespace: elastic-system
   name: kibana-sample
   # renovate: datasource=docker depName=docker.elastic.co/elasticsearch/elasticsearch
-  version: 8.19.18
+  version: 8.19.19
   count: 1
   labels: {}
   annotations: {}
-  http:
-    service:
-      metadata:
-        annotations: {}
-    tls:
-      selfSignedCertificate:
-        disabled: false
+  # No `http:` / podTemplate `metadata:` blocks — see the elasticsearch note:
+  # the ECK operator strips zero-value leaves, which would keep Argo CD
+  # permanently OutOfSync.
   elasticsearchRef:
     name: elasticsearch-sample
   config: {}
   podTemplate:
-    metadata:
-      labels: {}
     spec:
       containers:
         - name: kibana
@@ -130,7 +121,7 @@ kibana:
               cpu: 100m
               memory: 512Mi
             limits:
-              cpu: 1
+              cpu: '1'
               memory: 1Gi
   ingress:
     enabled: false
@@ -145,7 +136,7 @@ observability:
   filebeat:
     enabled: false
     # renovate: datasource=docker depName=docker.elastic.co/elasticsearch/elasticsearch
-    version: 8.19.18
+    version: 8.19.19
     state:
       persistence:
         storageClassName: ceph-corbo-rbd-hdd-retain
@@ -197,7 +188,7 @@ observability:
   metricbeat:
     enabled: false
     # renovate: datasource=docker depName=docker.elastic.co/elasticsearch/elasticsearch
-    version: 8.19.18
+    version: 8.19.19
     state:
       persistence:
         storageClassName: ceph-corbo-rbd-hdd-retain

@@ -33,6 +33,12 @@ for ns in federation-a elastic-system ingress-nginx mip-common-datacatalog \
   endsection
 done
 
+if kubectl get namespace elastic-system >/dev/null 2>&1; then
+  section "Elastic CRs (live objects incl. managed fields — for Argo diff analysis)"
+  kubectl -n elastic-system get elasticsearch,kibana -o yaml --show-managed-fields
+  endsection
+fi
+
 section "Argo CD repo-server logs (git fetch / render errors show up here)"
 kubectl -n "$NS" logs deploy/argocd-repo-server --tail=200
 endsection

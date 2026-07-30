@@ -29,8 +29,12 @@ jobs:
           framework: kubernetes,helm,kustomize
           output_format: sarif
           output_file_path: checkov-results.sarif
-          # Kustomize patch fragments produce false positives when scanned standalone
-          skip_path: argo-setup/patches
+          # argo-setup/patches: kustomize patch fragments produce false
+          # positives when scanned standalone.
+          # tests/e2e: CI-only kind shims, not production IaC; the checkov
+          # container's bundled kustomize also crashes on the eck overlay's
+          # embedded helm values (works fine with kustomize v5.8.1).
+          skip_path: argo-setup/patches,tests/e2e
           # To be removed once existing findings are resolved
           soft_fail: true
 

@@ -26,8 +26,8 @@ spec:
               config:
                 node.store.allow_mmap: false
               podTemplate:
-                metadata:
-                  labels: {}
+                # No empty metadata/labels maps: the ECK operator strips
+                # zero-value fields, leaving Argo CD permanently OutOfSync.
                 spec:
                   containers:
                     - name: elasticsearch
@@ -36,7 +36,7 @@ spec:
                           cpu: 500m
                           memory: 2Gi
                         limits:
-                          cpu: 2
+                          cpu: '2'
                           memory: 2Gi
               volumeClaimTemplates:
                 - metadata:
@@ -67,6 +67,17 @@ spec:
     automated:
       selfHeal: true
       prune: true
+    # Without a retry policy, automated sync never re-attempts a revision
+    # after one failed/terminated operation and the app parks OutOfSync.
+    # The ECK operator mutates the Elastic CRs it co-owns, so selfHeal can
+    # terminate a sync that is still waiting on Elasticsearch health (seen
+    # during the 8.19.19 e2e run) — retry lets the app converge on its own.
+    retry:
+      limit: 5
+      backoff:
+        duration: 30s
+        factor: 2
+        maxDuration: 5m
     syncOptions:
       # Server-side apply avoids client-side patch timeouts on large
       # Elastic CRs that the ECK operator concurrently mutates.

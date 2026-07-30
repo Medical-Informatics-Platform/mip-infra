@@ -3,3 +3,9 @@
 # chart's Ingress (gated on `if .Values.global.publicHost`).
 global:
   publicHost: ''
+# The backend resolves the Keycloak OIDC issuer (iam.ebrains.eu) at boot and
+# crashloops whenever it is unreachable from the runner — an external
+# dependency a version-bump test must not have. Same approach as mip-stack:
+# run with authentication off (AUTHENTICATION=0).
+backend:
+  authentication: false
