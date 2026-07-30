@@ -2,6 +2,6 @@
 cluster:
   managed: true
   storageClasses:
-    managed: ceph-corbo-cephfs
+    managed: ceph-corbo-cephfs-retain
 global:
   publicHost: datacatalogue.mip.ebrains.eu
