@@ -43,7 +43,7 @@ source "$REPO_ROOT/scripts/e2e/lib.sh"
 # renovate: datasource=github-releases depName=cert-manager/cert-manager
 CERT_MANAGER_VERSION=v1.19.1
 # renovate: datasource=github-releases depName=metallb/metallb
-METALLB_VERSION=v0.15.2
+METALLB_VERSION=v0.16.0
 
 need kind; need kubectl; need kustomize; need docker; need git; need yq
 case "$PROFILE" in exareme2|mip-stack) need helm ;; esac
