@@ -41,7 +41,7 @@ source "$REPO_ROOT/scripts/e2e/lib.sh"
 
 # --- pinned tool/manifest versions (Renovate-managed, see renovate.json5) ---
 # renovate: datasource=github-releases depName=cert-manager/cert-manager
-CERT_MANAGER_VERSION=v1.19.1
+CERT_MANAGER_VERSION=v1.21.1
 # renovate: datasource=github-releases depName=metallb/metallb
 METALLB_VERSION=v0.15.2
 
