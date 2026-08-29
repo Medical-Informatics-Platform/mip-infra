@@ -5,7 +5,7 @@ namespace: argocd-mip-team
 # Base: upstream HA manifest (resolved tag).
 # Bump policy: pin to a specific tag, manage upgrades via Renovate / manual PR.
 resources:
-  - https://raw.githubusercontent.com/argoproj/argo-cd/v3.3.11/manifests/ha/install.yaml
+  - https://raw.githubusercontent.com/argoproj/argo-cd/v3.5.2/manifests/ha/install.yaml
   - poddisruptionbudgets.yaml
   - argocd-server-ingress.yaml
 # Strategic-merge / JSON patches on top of the upstream base.
