@@ -1,0 +1,14 @@
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: argocd-dex-server
+rules:
+  - apiGroups: ['']
+    resources: [secrets]
+    resourceNames: [argocd-secret]
+    verbs: [get]
+  - apiGroups: ['']
+    resources: [configmaps]
+    resourceNames: [argocd-cm, argocd-rbac-cm]
+    verbs: [get]

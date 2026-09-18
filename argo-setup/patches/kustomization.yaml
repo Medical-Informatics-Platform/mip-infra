@@ -26,6 +26,7 @@ patches:
   - path: patch-argocd-repo-server-resources.yaml
   - path: patch-argocd-server-resources.yaml
   - path: patch-argocd-dex-server-resources.yaml
+  - path: patch-argocd-dex-server-role.yaml
   - path: patch-argocd-redis-ha-statefulset.yaml
   # Argo CD config
   - path: patch-argocd-cmd-params-cm.yaml
