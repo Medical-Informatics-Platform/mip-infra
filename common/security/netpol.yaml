@@ -68,12 +68,12 @@ spec:
         # namespace must carry it; this Application is the one that manages it.
         managedNamespaceMetadata:
           labels:
-            name: '{{ if contains "local" .path.path }}{{ .path.basename | lower
-              }}{{ else }}{{ .path.path | dir | base | lower }}{{ end }}'
+            name: '{{ if contains "local" .path.path }}{{ .path.basename | lower }}{{
+              else }}{{ .path.path | dir | base | lower }}{{ end }}'
             app.kubernetes.io/managed-by: argocd
             mip.namespace-type: federation
-            mip.federation-type: '{{ if contains "local" .path.path }}local{{ else }}hybrid{{
-              end }}'
+            mip.federation-type: '{{ if contains "local" .path.path }}local{{ else
+              }}hybrid{{ end }}'
         automated:
           selfHeal: true
 ---
@@ -138,8 +138,8 @@ metadata:
     app.kubernetes.io/part-of: common-network-policies
     app.kubernetes.io/managed-by: argocd
   annotations:
-    argocd.argoproj.io/note: Confines traffic from and to remote clusters to the exaflow components of
-      hybrid federations
+    argocd.argoproj.io/note: Confines traffic from and to remote clusters to the exaflow
+      components of hybrid federations
 spec:
   project: mip-argo-project-security
   source:
