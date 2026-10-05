@@ -1,0 +1,460 @@
+---
+# Per-remote identities on the Submariner broker (Submariner 0.24.1, Kubernetes >= 1.30).
+#
+# Contents:
+#   1. Role submariner-remote-cluster            - what one remote cluster may do in the broker namespace
+#   2. Role submariner-remote-cluster-secret-syncer (optional) - secrets read, only for remotes whose
+#      Submariner resource sets brokerK8sSecret (see NOTES.md, point 3). Bound by enroll-remote.sh on request.
+#   3. ValidatingAdmissionPolicy/Binding submariner-remote-cluster-ownership
+#      - a cluster-<id> account may only create, update or delete broker objects that belong to <id>
+#   4. ValidatingAdmissionPolicy/Binding submariner-remote-cluster-subnets (parameterised by ConfigMaps)
+#      - Endpoint spec.subnets must stay within the subnets recorded at enrollment
+#
+# Naming: the ServiceAccount of a remote is cluster-<clusterID> in submariner-k8s-broker. This is the
+# name the operator itself expects (submariner-operator pkg/names/names.go: ForClusterSA = "cluster-" + id)
+# and the name subctl join would create.
+#
+# Field names checked (submariner pkg/apis/submariner.io/v1/types.go):
+#   Cluster.spec.cluster_id, Endpoint.spec.cluster_id, Endpoint.spec.subnets
+# Labels on broker copies (admiral pkg/federate/federator.go, lighthouse pkg/agent/controller):
+#   submariner-io/clusterID                     - set by the admiral broker syncer on every local -> broker copy
+#   multicluster.kubernetes.io/source-cluster   - set by Lighthouse on its EndpointSlices (and pre-0.16 ServiceImports)
+#   lighthouse.submariner.io/sourceCluster      - legacy (pre-0.16) ServiceImport label, migration path only
+# Aggregated ServiceImports (one per exported service, named <service>-<namespace>) carry none of these labels;
+# ownership is expressed through status.clusters[].cluster and the annotation timestamp.submariner.io/<clusterID>.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: submariner-remote-cluster
+  namespace: submariner-k8s-broker
+rules:
+  # Gateway datastore syncer: publishes the remote's Cluster and Endpoint, reads everyone's.
+  - apiGroups:
+      - submariner.io
+    resources:
+      - clusters
+      - endpoints
+    verbs:
+      - create
+      - get
+      - list
+      - watch
+      - patch
+      - update
+      - delete
+  # Lighthouse agent: aggregated ServiceImports (status.clusters is written through the status subresource
+  # because the mcs-api CRD declares subresources.status; admiral util.CreateOrUpdate calls UpdateStatus).
+  - apiGroups:
+      - multicluster.x-k8s.io
+    resources:
+      - serviceimports
+      - serviceimports/status
+    verbs:
+      - create
+      - get
+      - list
+      - watch
+      - patch
+      - update
+      - delete
+  # Lighthouse agent: EndpointSlices of exported services. endpointslices/restricted is the authorization
+  # check the API server performs for endpoint addresses in restricted ranges; it never reaches admission.
+  - apiGroups:
+      - discovery.k8s.io
+    resources:
+      - endpointslices
+      - endpointslices/restricted
+    verbs:
+      - create
+      - get
+      - list
+      - watch
+      - patch
+      - update
+      - delete
+# Intentionally absent compared with the upstream broker client Role:
+#   submariner.io brokers get/list  - only subctl and the broker-side controller read the Broker resource
+#   secrets get/list/watch          - see the optional Role below
+#   serviceaccounts get/list        - used by no runtime component
+---
+# OPTIONAL. Bind this Role (in addition to submariner-remote-cluster) only for a remote whose Submariner
+# resource sets spec.brokerK8sSecret. The operator then starts a "Broker secret syncer" that GETs, LISTs and
+# WATCHes Secrets in the broker namespace with the remote's token; without these verbs the Submariner
+# reconcile fails before any DaemonSet is created (NOTES.md, point 3). Any account holding this Role can read
+# every Secret in submariner-k8s-broker, so the namespace must hold no Secret worth protecting.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: submariner-remote-cluster-secret-syncer
+  namespace: submariner-k8s-broker
+rules:
+  - apiGroups:
+      - ""
+    resources:
+      - secrets
+    verbs:
+      - get
+      - list
+      - watch
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata:
+  name: submariner-remote-cluster-ownership
+spec:
+  # A CEL error or an unavailable policy denies the request rather than letting it through.
+  failurePolicy: Fail
+  matchConstraints:
+    namespaceSelector:
+      matchLabels:
+        kubernetes.io/metadata.name: submariner-k8s-broker
+    resourceRules:
+      - apiGroups:
+          - submariner.io
+        apiVersions:
+          - v1
+        operations:
+          - CREATE
+          - UPDATE
+          - DELETE
+        resources:
+          - clusters
+          - endpoints
+      - apiGroups:
+          - discovery.k8s.io
+        apiVersions:
+          - v1
+        operations:
+          - CREATE
+          - UPDATE
+          - DELETE
+        resources:
+          - endpointslices
+      # serviceimports/status must be listed: the Lighthouse agent updates status.clusters through the
+      # status subresource. On such a request object/oldObject are complete objects.
+      - apiGroups:
+          - multicluster.x-k8s.io
+        apiVersions:
+          - v1alpha1
+        operations:
+          - CREATE
+          - UPDATE
+          - DELETE
+        resources:
+          - serviceimports
+          - serviceimports/status
+  matchConditions:
+    # Only the per-remote accounts are constrained. The chart's client account used by the central operator
+    # (submariner-broker-submariner-k8s-broker-client), cluster administrators, controllers and Argo CD are
+    # not matched and remain unaffected.
+    - name: caller-is-remote-cluster-account
+      expression: >-
+        request.userInfo.username.startsWith('system:serviceaccount:submariner-k8s-broker:cluster-')
+  variables:
+    # 'system:serviceaccount:submariner-k8s-broker:cluster-' is 52 characters long.
+    - name: callerID
+      expression: request.userInfo.username.substring(52)
+    - name: isCreate
+      expression: request.operation == 'CREATE'
+    - name: isUpdate
+      expression: request.operation == 'UPDATE'
+    - name: isDelete
+      expression: request.operation == 'DELETE'
+    # The object whose ownership is judged: the incoming object, or the stored one for DELETE (object is null).
+    - name: target
+      expression: "variables.isDelete ? oldObject : object"
+    - name: isCluster
+      expression: request.resource.group == 'submariner.io' && request.resource.resource == 'clusters'
+    - name: isEndpoint
+      expression: request.resource.group == 'submariner.io' && request.resource.resource == 'endpoints'
+    - name: isEndpointSlice
+      expression: request.resource.group == 'discovery.k8s.io' && request.resource.resource == 'endpointslices'
+    - name: isServiceImport
+      expression: >-
+        request.resource.group == 'multicluster.x-k8s.io' && request.resource.resource == 'serviceimports'
+    - name: targetLabels
+      expression: "has(variables.target.metadata.labels) ? variables.target.metadata.labels : {}"
+    # oldObject is null on CREATE; the old* variables are only referenced behind isUpdate guards.
+    - name: oldLabels
+      expression: "has(oldObject.metadata.labels) ? oldObject.metadata.labels : {}"
+    - name: targetAnnotations
+      expression: "has(variables.target.metadata.annotations) ? variables.target.metadata.annotations : {}"
+    - name: oldAnnotations
+      expression: "has(oldObject.metadata.annotations) ? oldObject.metadata.annotations : {}"
+    - name: clusterLabelKeys
+      expression: >-
+        ['submariner-io/clusterID', 'multicluster.kubernetes.io/source-cluster',
+         'lighthouse.submariner.io/sourceCluster']
+    # Every cluster label that is present names the caller.
+    - name: targetOwnedByCaller
+      expression: >-
+        variables.clusterLabelKeys.all(k,
+          !(k in variables.targetLabels) || variables.targetLabels[k] == variables.callerID)
+    - name: oldOwnedByCaller
+      expression: >-
+        variables.clusterLabelKeys.all(k,
+          !(k in variables.oldLabels) || variables.oldLabels[k] == variables.callerID)
+    - name: targetHasClusterLabel
+      expression: variables.clusterLabelKeys.exists(k, k in variables.targetLabels)
+    # Aggregated ServiceImport: no cluster label, annotated with the exported service name
+    # (lighthouse service_import.go: Distribute builds it with these annotations and no labels).
+    - name: isAggregatedServiceImport
+      expression: >-
+        variables.isServiceImport && !variables.targetHasClusterLabel
+        && 'multicluster.kubernetes.io/service-name' in variables.targetAnnotations
+    - name: timestampPrefix
+      expression: "'timestamp.submariner.io/'"
+    - name: callerTimestampKey
+      expression: variables.timestampPrefix + variables.callerID
+    - name: allocatedByKey
+      expression: "'lighthouse.submariner.io/clusterset-ip-allocated-by'"
+    - name: serviceNameKey
+      expression: "'multicluster.kubernetes.io/service-name'"
+    - name: sourceNamespaceKey
+      expression: "'lighthouse.submariner.io/sourceNamespace'"
+    # Names of the exporting clusters recorded in status.clusters ([] when absent).
+    - name: targetClusters
+      expression: >-
+        has(variables.target.status) && has(variables.target.status.clusters)
+        ? variables.target.status.clusters.map(c, c.cluster) : []
+    - name: oldClusters
+      expression: >-
+        has(oldObject.status) && has(oldObject.status.clusters)
+        ? oldObject.status.clusters.map(c, c.cluster) : []
+  validations:
+    # --- submariner.io Cluster and Endpoint -----------------------------------------------------------
+    - expression: >-
+        !(variables.isCluster || variables.isEndpoint)
+        || (has(variables.target.spec.cluster_id)
+            && variables.target.spec.cluster_id == variables.callerID
+            && variables.targetOwnedByCaller
+            && (!variables.isUpdate
+                || (has(oldObject.spec.cluster_id)
+                    && oldObject.spec.cluster_id == variables.callerID
+                    && variables.oldOwnedByCaller)))
+      message: "spec.cluster_id of a Cluster or Endpoint must equal the cluster ID of the calling account"
+      messageExpression: >-
+        'spec.cluster_id must equal the caller cluster ID ' + variables.callerID
+        + ' (operation ' + request.operation + ')'
+      reason: Forbidden
+    # Object names follow the gateway's naming (Cluster: <clusterID>; Endpoint: <clusterID>-<cableName>).
+    # Cluster IDs enrolled by enroll-remote.sh are DNS-1123 labels, so admiral's EnsureValidName leaves
+    # them unchanged.
+    - expression: >-
+        !(variables.isCluster || variables.isEndpoint)
+        || (variables.isCluster
+            ? variables.target.metadata.name == variables.callerID
+            : variables.target.metadata.name.startsWith(variables.callerID + '-'))
+      message: "Cluster objects must be named <clusterID> and Endpoint objects <clusterID>-<cableName>"
+      messageExpression: >-
+        'object name ' + variables.target.metadata.name + ' does not belong to cluster ' + variables.callerID
+      reason: Forbidden
+    # --- discovery.k8s.io EndpointSlice -----------------------------------------------------------------
+    # Broker copies always carry submariner-io/clusterID (admiral federator) and
+    # multicluster.kubernetes.io/source-cluster (lighthouse service_endpoint_slices.go newEndpointSliceFrom).
+    - expression: >-
+        !variables.isEndpointSlice
+        || ('submariner-io/clusterID' in variables.targetLabels
+            && 'multicluster.kubernetes.io/source-cluster' in variables.targetLabels
+            && variables.targetOwnedByCaller
+            && (!variables.isUpdate
+                || ('submariner-io/clusterID' in variables.oldLabels && variables.oldOwnedByCaller)))
+      message: >-
+        EndpointSlices must carry submariner-io/clusterID and multicluster.kubernetes.io/source-cluster
+        naming the calling cluster
+      messageExpression: >-
+        'EndpointSlice ' + variables.target.metadata.name + ' does not belong to cluster ' + variables.callerID
+      reason: Forbidden
+    # --- cluster labels are immutable on UPDATE (all kinds) -----------------------------------------
+    # Prevents relabelling a foreign or shared object into one's own, or stripping the ownership labels.
+    - expression: >-
+        !variables.isUpdate
+        || variables.clusterLabelKeys.all(k,
+             (k in variables.oldLabels) == (k in variables.targetLabels)
+             && (!(k in variables.oldLabels) || variables.oldLabels[k] == variables.targetLabels[k]))
+      message: "cluster ownership labels may not be added, removed or changed on update"
+      reason: Forbidden
+    # --- ServiceImport, legacy per-cluster copy (has cluster labels) -------------------------------------
+    - expression: >-
+        !(variables.isServiceImport && variables.targetHasClusterLabel)
+        || (variables.targetOwnedByCaller && (!variables.isUpdate || variables.oldOwnedByCaller))
+      message: "a per-cluster ServiceImport must be labelled with the cluster ID of the calling account"
+      messageExpression: >-
+        'ServiceImport ' + variables.target.metadata.name + ' does not belong to cluster ' + variables.callerID
+      reason: Forbidden
+    # --- ServiceImport of unknown shape is refused --------------------------------------------------------
+    - expression: >-
+        !variables.isServiceImport || variables.targetHasClusterLabel || variables.isAggregatedServiceImport
+      message: >-
+        ServiceImports on the broker are either per-cluster copies (cluster labels) or aggregated imports
+        (multicluster.kubernetes.io/service-name annotation)
+      reason: Forbidden
+    # --- aggregated ServiceImport, CREATE -----------------------------------------------------------------
+    # Distribute creates it with annotations service-name, sourceNamespace and timestamp.submariner.io/<own id>
+    # and status.clusters [<own id>]; status is cleared by the API server before admission (status subresource)
+    # and written afterwards through /status.
+    - expression: >-
+        !(variables.isAggregatedServiceImport && variables.isCreate)
+        || (variables.callerTimestampKey in variables.targetAnnotations
+            && variables.targetAnnotations.filter(k, k.startsWith(variables.timestampPrefix))
+                 .all(k, k == variables.callerTimestampKey)
+            && (!(variables.allocatedByKey in variables.targetAnnotations)
+                || variables.targetAnnotations[variables.allocatedByKey] == variables.callerID)
+            && variables.targetClusters.all(c, c == variables.callerID))
+      message: >-
+        a new aggregated ServiceImport may only record the calling cluster
+        (timestamp.submariner.io/<id> annotation, clusterset-ip-allocated-by, status.clusters)
+      reason: Forbidden
+    # --- aggregated ServiceImport, UPDATE: status.clusters -------------------------------------------------
+    # Every exporter updates the shared object (ports, session affinity by the oldest exporter, its own
+    # membership). The only permitted change to status.clusters is adding or removing the caller's own entry.
+    # On a main-resource update the API server copies status from the stored object, so this holds trivially;
+    # it is enforced on /status updates.
+    - expression: >-
+        !(variables.isAggregatedServiceImport && variables.isUpdate)
+        || variables.oldClusters.filter(c, c != variables.callerID)
+           == variables.targetClusters.filter(c, c != variables.callerID)
+      message: "an exporting cluster may only add or remove its own entry in status.clusters"
+      messageExpression: >-
+        'status.clusters may only change the entry of cluster ' + variables.callerID
+      reason: Forbidden
+    # --- aggregated ServiceImport, UPDATE: annotations -------------------------------------------------------
+    # Other clusters' timestamp annotations, the clusterset IP allocator and the service identity are frozen.
+    # On a /status update the API server keeps the stored metadata, so this holds trivially there.
+    - expression: >-
+        !(variables.isAggregatedServiceImport && variables.isUpdate)
+        || (variables.oldAnnotations
+              .filter(k, k.startsWith(variables.timestampPrefix) && k != variables.callerTimestampKey)
+              .all(k, k in variables.targetAnnotations
+                      && variables.targetAnnotations[k] == variables.oldAnnotations[k])
+            && variables.targetAnnotations
+              .filter(k, k.startsWith(variables.timestampPrefix) && k != variables.callerTimestampKey)
+              .all(k, k in variables.oldAnnotations)
+            && (!(variables.allocatedByKey in variables.oldAnnotations)
+                || (variables.allocatedByKey in variables.targetAnnotations
+                    && variables.targetAnnotations[variables.allocatedByKey]
+                       == variables.oldAnnotations[variables.allocatedByKey]))
+            && (!(variables.serviceNameKey in variables.oldAnnotations)
+                || variables.targetAnnotations[variables.serviceNameKey]
+                   == variables.oldAnnotations[variables.serviceNameKey])
+            && (!(variables.sourceNamespaceKey in variables.oldAnnotations)
+                || (variables.sourceNamespaceKey in variables.targetAnnotations
+                    && variables.targetAnnotations[variables.sourceNamespaceKey]
+                       == variables.oldAnnotations[variables.sourceNamespaceKey])))
+      message: >-
+        only the calling cluster's timestamp annotation may change on an aggregated ServiceImport; the
+        service identity and the clusterset IP allocator are immutable
+      reason: Forbidden
+    # --- aggregated ServiceImport, UPDATE: spec.type and spec.ips are fixed at creation --------------------
+    - expression: >-
+        !(variables.isAggregatedServiceImport && variables.isUpdate)
+        || ((has(oldObject.spec.type) ? oldObject.spec.type : '')
+              == (has(object.spec.type) ? object.spec.type : '')
+            && (has(oldObject.spec.ips) ? oldObject.spec.ips : [])
+              == (has(object.spec.ips) ? object.spec.ips : []))
+      message: "spec.type and spec.ips of an aggregated ServiceImport may not change after creation"
+      reason: Forbidden
+    # --- aggregated ServiceImport, DELETE -------------------------------------------------------------------
+    # service_import_aggregator.go deletes the object (with a resourceVersion precondition) when removing the
+    # caller leaves status.clusters empty; at that moment the stored object lists only the caller.
+    - expression: >-
+        !(variables.isAggregatedServiceImport && variables.isDelete)
+        || variables.targetClusters.all(c, c == variables.callerID)
+      message: "an aggregated ServiceImport may only be deleted once no other cluster exports the service"
+      messageExpression: >-
+        'ServiceImport ' + variables.target.metadata.name + ' is still exported by other clusters: '
+        + variables.targetClusters.filter(c, c != variables.callerID).join(', ')
+      reason: Forbidden
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicyBinding
+metadata:
+  name: submariner-remote-cluster-ownership
+spec:
+  policyName: submariner-remote-cluster-ownership
+  validationActions:
+    - Deny
+  matchResources:
+    namespaceSelector:
+      matchLabels:
+        kubernetes.io/metadata.name: submariner-k8s-broker
+---
+# Subnet pinning. Parameters are the enrollment ConfigMaps cluster-<id> (label
+# submariner.io/remote-enrollment: "true", data.subnets: comma-separated CIDRs). Kept separate from the
+# ownership policy on purpose: a policy with paramRef and parameterNotFoundAction Allow is skipped entirely
+# when no parameter matches, which must never happen to the ownership rules.
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata:
+  name: submariner-remote-cluster-subnets
+spec:
+  failurePolicy: Fail
+  paramKind:
+    apiVersion: v1
+    kind: ConfigMap
+  matchConstraints:
+    namespaceSelector:
+      matchLabels:
+        kubernetes.io/metadata.name: submariner-k8s-broker
+    resourceRules:
+      - apiGroups:
+          - submariner.io
+        apiVersions:
+          - v1
+        operations:
+          - CREATE
+          - UPDATE
+        resources:
+          - endpoints
+  matchConditions:
+    - name: caller-is-remote-cluster-account
+      expression: >-
+        request.userInfo.username.startsWith('system:serviceaccount:submariner-k8s-broker:cluster-')
+  variables:
+    - name: callerID
+      expression: request.userInfo.username.substring(52)
+    # With a selector every matching ConfigMap is evaluated once; the request is admitted only if all
+    # evaluations pass. This variable makes evaluations against other clusters' ConfigMaps pass.
+    - name: paramIsCaller
+      expression: params.metadata.name == 'cluster-' + variables.callerID
+    - name: allowedSubnets
+      expression: >-
+        has(params.data) && 'subnets' in params.data
+        ? params.data['subnets'].split(',').map(s, s.trim()).filter(s, s != '') : []
+  validations:
+    # Each Endpoint subnet must equal, or be contained in, one of the enrolled CIDRs (cidr()/isCIDR()
+    # need Kubernetes >= 1.30). A ConfigMap without a subnets entry pins nothing.
+    - expression: >-
+        !variables.paramIsCaller
+        || variables.allowedSubnets.size() == 0
+        || !has(object.spec.subnets)
+        || object.spec.subnets.all(s,
+             variables.allowedSubnets.exists(a,
+               a == s.trim()
+               || (isCIDR(a) && isCIDR(s.trim()) && cidr(a).containsCIDR(cidr(s.trim())))))
+      message: "Endpoint spec.subnets must lie within the subnets recorded for the cluster at enrollment"
+      messageExpression: >-
+        'Endpoint subnets [' + object.spec.subnets.join(', ') + '] are not within the enrolled subnets ['
+        + variables.allowedSubnets.join(', ') + '] of cluster ' + variables.callerID
+      reason: Forbidden
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicyBinding
+metadata:
+  name: submariner-remote-cluster-subnets
+spec:
+  policyName: submariner-remote-cluster-subnets
+  validationActions:
+    - Deny
+  paramRef:
+    namespace: submariner-k8s-broker
+    selector:
+      matchLabels:
+        submariner.io/remote-enrollment: "true"
+    # No enrollment ConfigMap at all: nothing to pin, the request passes this policy (ownership is still
+    # enforced by submariner-remote-cluster-ownership). With Deny an empty selection would reject instead.
+    parameterNotFoundAction: Allow
+  matchResources:
+    namespaceSelector:
+      matchLabels:
+        kubernetes.io/metadata.name: submariner-k8s-broker

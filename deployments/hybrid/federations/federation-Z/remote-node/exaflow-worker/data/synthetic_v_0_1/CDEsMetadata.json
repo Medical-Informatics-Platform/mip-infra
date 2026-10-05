@@ -1,0 +1,88 @@
+{
+  "code": "synthetic",
+  "version": "0.1",
+  "label": "Synthetic smoke-test data model",
+  "variables": [
+    {
+      "isCategorical": true,
+      "code": "dataset",
+      "sql_type": "text",
+      "description": "Dataset code, one per CSV file",
+      "enumerations": [
+        {
+          "code": "synthetic_a",
+          "label": "Synthetic A"
+        },
+        {
+          "code": "synthetic_b",
+          "label": "Synthetic B"
+        }
+      ],
+      "label": "Dataset",
+      "units": "",
+      "type": "nominal",
+      "methodology": ""
+    }
+  ],
+  "groups": [
+    {
+      "code": "Demographics",
+      "label": "Demographics",
+      "variables": [
+        {
+          "isCategorical": false,
+          "code": "subjectcode",
+          "sql_type": "text",
+          "description": "Synthetic subject identifier",
+          "label": "subjectcode",
+          "methodology": "",
+          "type": "nominal"
+        },
+        {
+          "isCategorical": false,
+          "code": "age_value",
+          "sql_type": "int",
+          "minValue": 0,
+          "maxValue": 130,
+          "description": "Synthetic age",
+          "label": "Age",
+          "units": "years",
+          "type": "integer",
+          "methodology": ""
+        },
+        {
+          "isCategorical": true,
+          "code": "gender_type",
+          "sql_type": "text",
+          "description": "Synthetic gender",
+          "enumerations": [
+            {
+              "code": "M",
+              "label": "Male"
+            },
+            {
+              "code": "F",
+              "label": "Female"
+            }
+          ],
+          "label": "Gender",
+          "units": "",
+          "type": "nominal",
+          "methodology": ""
+        },
+        {
+          "isCategorical": false,
+          "code": "score_value",
+          "sql_type": "real",
+          "minValue": 0,
+          "maxValue": 100,
+          "description": "Synthetic score between 0 and 100",
+          "label": "Score",
+          "units": "",
+          "type": "real",
+          "methodology": ""
+        }
+      ]
+    }
+  ]
+}

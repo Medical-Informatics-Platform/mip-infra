@@ -202,6 +202,40 @@ If applications cannot connect after applying policies:
 - **Federation Type Separation**: Local and hybrid federations have separate access controls
 - **Management Access**: ArgoCD retains full management capabilities
 
+## Remote clusters (Submariner)
+
+Hybrid federations receive the same default deny as local ones (the
+`federation-network-policies` ApplicationSet discovers
+`deployments/hybrid/federations/*/mip-infrastructure`). The flows a
+federation needs from its remote nodes are allowed per component and port in
+the federation's own `submariner-policies/` directory, with one `ipBlock` per
+remote pod CIDR.
+
+`remote-clusters/` adds a cluster-wide safety net: a Calico `Tier`
+(`remote-clusters`, order 500) and a `GlobalNetworkPolicy` that deny any
+traffic from or to the remote CIDRs outside the exaflow controller, aggregation
+server and Flower server of hybrid federations, and pass everything else on to
+the Kubernetes NetworkPolicies. It is synced by the `netpol-remote-clusters`
+Application (project `mip-argo-project-security`, which whitelists `Tier` and
+`GlobalNetworkPolicy`; the application controller ClusterRole grants the
+matching verbs). Calico 3.29 or later is required for tiers
+(`kubectl get tiers.projectcalico.org` must list `default`).
+
+When a remote node is added, its pod CIDR goes into the federation's
+`submariner-policies/network-policy.yaml` and its pod and service CIDRs into
+`remote-clusters/global-deny-remote-cidrs.yaml`;
+`scripts/check-remote-cidrs.sh` (run in CI) asserts that the three places agree
+with the node's `submariner-values.yaml`.
+
+The worker isolation policies of the federation chart
+(`federation/templates/exareme-network-policy.yaml`) still select the
+pre-1.0.0 labels `app: exareme2-*` and match no pod. Re-enabling them requires
+the corrected selectors and complete rules (controller to worker 5672, worker
+to aggregation server 50051, worker to controller 5000, worker DNS, local
+worker to global worker 8080) together with the `excludedSelector` parameter
+in `netpol.yaml`; that change alters local federations too and is tracked
+separately.
+
 ## Monitoring
 
 Monitor network policy effectiveness:

@@ -1,0 +1,16 @@
+---
+# Services the remote federation-Z workers reach over Submariner. Lighthouse
+# publishes them as <name>.federation-z.svc.clusterset.local on every joined
+# cluster. The aggregation server is needed by every algorithm run on a remote
+# worker; the controller only by Flower-based algorithms.
+apiVersion: multicluster.x-k8s.io/v1alpha1
+kind: ServiceExport
+metadata:
+  name: exaflow-aggregation-service
+  namespace: federation-z
+---
+apiVersion: multicluster.x-k8s.io/v1alpha1
+kind: ServiceExport
+metadata:
+  name: exaflow-controller-service
+  namespace: federation-z

@@ -183,6 +183,13 @@ jobs:
           # at least prove the composition still builds.
           kustomize build deployments/hybrid/federations/federation-Z/mip-infrastructure >/dev/null
           echo "OK: federation-Z renders"
+          # Remote-node worker manifests are applied on the remote cluster by
+          # deploy-worker.sh; prove they still build.
+          kustomize build deployments/hybrid/federations/federation-Z/remote-node/exaflow-worker >/dev/null
+          echo "OK: federation-Z remote worker renders"
+          kustomize build common/security/remote-clusters >/dev/null
+          bash scripts/check-remote-cidrs.sh
+          echo "OK: remote-cluster containment renders and CIDRs are consistent"
           kustomize build deployments/local/federations/federation-A >/dev/null
           echo "OK: federation-A renders"
           kustomize build tests/e2e/federation >/dev/null

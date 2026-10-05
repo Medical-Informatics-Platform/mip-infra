@@ -40,6 +40,8 @@ Two SAs, both cluster-scoped. Sources:
 | `apiextensions.k8s.io` | customresourcedefinitions | C/U/D/P | only ECK chart needs CRDs at install; `mip-common` and `mip-monitoring` whitelist them |
 | `admissionregistration.k8s.io` | mutating/validatingadmissionwebhooks | **none** | intentionally **not granted** — every AppProject blacklists Webhooks; if a future chart needs them, restore here AND whitelist in the AppProject in the same PR |
 | `submariner.io`, `operator.openshift.io`, `config.openshift.io`, `projectcalico.org`, `network.openshift.io` | submariners/gateways/clusters/dnses/networks/ippools/etc. | mixed | submariner-only |
+| `projectcalico.org` | tiers; `tier.globalnetworkpolicies` named `remote-clusters.*` | C/U/D/P | `mip-security` only: confinement of the Submariner remote CIDRs (`common/security/remote-clusters`); Calico's tiered-policy RBAC, no write on default-tier policies |
+| `multicluster.x-k8s.io` | serviceexports | C/U/D/P | hybrid federations export the aggregation server and controller to remote nodes |
 | ECK groups (`elasticsearch.k8s.elastic.co`, etc.) | elasticsearches, kibanas, beats, … | C/U/D/P/G/L/W | mip-monitoring-only |
 
 ### `argocd-server` — read-mostly, drives the UI
@@ -83,7 +85,7 @@ Source of truth: [`projects/static/`](../projects/static/) and the per-fed templ
 | **mip-argo-project-monitoring** | `elastic-system` | none | workload kinds + Ingress + Gateway API routes + ECK CRs | ❌ blacklisted |
 | **mip-argo-project-federations** *(umbrella)* | `argocd-mip-team` | none | `Application` only | ❌ blacklisted |
 | **mip-argo-project-federation-`<name>`** *(per-fed, templated)* | `federation-<name>`, `argocd-mip-team` | `Namespace` | full workload set + Ingress + Gateway API routes | ✅ scoped to that NS |
-| **mip-argo-project-security** | `federation-*`, `mip-common-*` | `Namespace` | `NetworkPolicy`, `Application` | ❌ blacklisted |
+| **mip-argo-project-security** | `federation-*`, `mip-common-*`, `argocd-mip-team` (nominal, cluster-scoped objects only) | `Namespace`, Calico `Tier`, `GlobalNetworkPolicy` | `NetworkPolicy` | ❌ blacklisted |
 | **mip-argo-project-submariner** *(opted-out of lint)* | `submariner-k8s-broker`, `submariner-operator` | `CRD`, submariner.io CRs | full workload set | ✅ legitimately required |
 
 Every project also carries an explicit `clusterResourceBlacklist`:
@@ -124,6 +126,7 @@ Instead it is shipped under [`base/mip-infrastructure/rbac/`](../base/mip-infras
 | `eck-beats-rbac.yaml` | `eck-filebeat`, `eck-metricbeat` SAs in `elastic-system` | ClusterRole + ClusterRoleBinding |
 | `haproxy-public-rbac.yaml` | `haproxy-public` SA in `ingress-nginx` | ClusterRole + ClusterRoleBinding **plus** namespaced Role + RoleBinding (leader-election in `ingress-nginx`) |
 | `submariner-rbac.yaml` | submariner gateway/operator/routeagent/lighthouse | mixed cluster + namespaced (submariner-k8s-broker, submariner-operator) |
+| `submariner-remote-admission.yaml` | per-remote broker accounts `cluster-<id>` in `submariner-k8s-broker` | namespaced Role `submariner-remote-cluster` plus two cluster-scoped `ValidatingAdmissionPolicy` objects and their bindings (ownership of broker objects, subnet pinning) |
 
 ⚠ **No automated check** that these out-of-band files stay in sync with the Helm charts they were extracted from. Procedure for re-extracting after upstream chart bump is undocumented.
 

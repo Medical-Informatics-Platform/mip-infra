@@ -13,18 +13,27 @@ spec:
     # Allow deployment to federation namespaces for network policies
     - namespace: federation-*
       server: https://kubernetes.default.svc
-    # Allow deployment to common namespaces for network policies  
+    # Allow deployment to common namespaces for network policies
     - namespace: mip-common-*
+      server: https://kubernetes.default.svc
+    # Nominal destination of netpol-remote-clusters, which renders
+    # cluster-scoped objects only (common/security/remote-clusters)
+    - namespace: argocd-mip-team
       server: https://kubernetes.default.svc
   clusterResourceWhitelist:
     # Allow namespace creation for auto-discovered federations
     - group: ''
       kind: Namespace
+    # Calico tier and global policy confining the Submariner remote CIDRs
+    - group: projectcalico.org
+      kind: Tier
+    - group: projectcalico.org
+      kind: GlobalNetworkPolicy
   namespaceResourceWhitelist:
-    # Standard ArgoCD resources for ApplicationSets
-    - group: argoproj.io
-      kind: Application
-    # Allow NetworkPolicy management in namespaces
+    # Allow NetworkPolicy management in namespaces. Application is not listed:
+    # the netpol-* Applications are created by the ApplicationSet controller,
+    # and with argocd-mip-team as a destination the entry would let this
+    # project create Applications in the Argo CD namespace.
     - group: networking.k8s.io
       kind: NetworkPolicy
   # Explicitly blacklist sensitive resources

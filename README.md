@@ -25,6 +25,7 @@ federation.
 | Understand the design and AppProject model | [docs/architecture.md](docs/architecture.md) |
 | Install MIP from scratch on a fresh cluster | [docs/getting-started.md](docs/getting-started.md) |
 | Add a federation, cluster, or shared app | [docs/operations.md](docs/operations.md) |
+| Connect a remote node to a hybrid federation | [docs/hybrid-federations.md](docs/hybrid-federations.md) |
 | Diagnose a stuck Application or sync error | [docs/troubleshooting.md](docs/troubleshooting.md) |
 | Sanity-check a bootstrap or feature branch | [docs/testing.md](docs/testing.md) |
 | Reach a cluster from off-network | [docs/remote-access.md](docs/remote-access.md) |

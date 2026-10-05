@@ -1,0 +1,107 @@
+---
+# Calico policy confining traffic exchanged with remote clusters over the
+# Submariner tunnel to the exaflow components of hybrid federations. It never
+# allows anything itself: remote flows to the permitted components are passed
+# on to the namespaced NetworkPolicies of the federation
+# (deployments/hybrid/federations/*/mip-infrastructure/submariner-policies/),
+# every other flow from or to a remote CIDR is denied, and all remaining
+# traffic is passed on unchanged.
+#
+# Why a Tier. Kubernetes NetworkPolicies and Calico policies without a tier
+# live in the default tier (order 1,000,000). A Pass rule evaluated there
+# skips the remaining policies of that tier, including every Kubernetes
+# NetworkPolicy, and jumps to the endpoint profile, which allows. Evaluated
+# from a tier with a lower order, Pass continues with the next tier, so the
+# namespaced policies keep their effect. Calico Open Source 3.29 or later
+# (reference/resources/tier, network-policy/policy-tiers/tiered-policy).
+#
+# Remote node registry: pod and service CIDR of every remote node. The pod
+# CIDRs also appear in each hybrid federation's submariner-policies and both
+# places change together (scripts/check-remote-cidrs.sh asserts it).
+#   node 1 (federation-z): 10.3.0.0/16, 10.152.185.0/24
+#   node 2 (federation-z): 10.4.0.0/16, 10.152.186.0/24
+apiVersion: projectcalico.org/v3
+kind: Tier
+metadata:
+  name: remote-clusters
+spec:
+  # Below the default tier (1,000,000) and below kube-admin (1,000), so no
+  # later policy can allow remote traffic past this tier.
+  order: 500
+  # Safety net: an endpoint selected by a policy of this tier that matches no
+  # rule continues with the next tier instead of the end-of-tier drop. The
+  # policy below ends with an explicit Pass in both directions anyway.
+  defaultAction: Pass
+---
+apiVersion: projectcalico.org/v3
+kind: GlobalNetworkPolicy
+metadata:
+  # Policies outside the default tier carry the tier name as prefix.
+  name: remote-clusters.confine-remote-clusters
+spec:
+  tier: remote-clusters
+  order: 100
+  # Kubernetes pods only: workload endpoints carry this label, host endpoints
+  # do not. None exist on this cluster, and remote pods cannot reach node
+  # addresses because Submariner only routes the pod and service CIDRs. The
+  # one host-terminated destination behind a ClusterIP, the API server at the
+  # first service address, is out of reach of any workload policy (see
+  # docs/hybrid-federations.md, residual risks). applyOnForward, preDNAT and
+  # doNotTrack are host endpoint settings and are not needed: policy on the
+  # destination pod is evaluated after kube-proxy's DNAT, against the
+  # preserved remote source address.
+  selector: projectcalico.org/orchestrator == 'k8s'
+  types: [Ingress, Egress]
+  ingress:
+    # Remote worker processes -> controller HTTP API of a hybrid federation
+    # (Flower input, CDEs metadata, Flower result). Pass: the federation's own
+    # NetworkPolicy decides per remote CIDR.
+    - action: Pass
+      protocol: TCP
+      source:
+        nets: [10.3.0.0/16, 10.4.0.0/16]
+      destination:
+        namespaceSelector: mip.federation-type == 'hybrid'
+        selector: app == 'exaflow-controller'
+        ports: [5000]
+    # Remote workers -> aggregation server of a hybrid federation.
+    - action: Pass
+      protocol: TCP
+      source:
+        nets: [10.3.0.0/16, 10.4.0.0/16]
+      destination:
+        namespaceSelector: mip.federation-type == 'hybrid'
+        selector: app == 'exaflow-aggregation-server'
+        ports: [50051]
+    # Remote Flower clients -> Flower server on the global worker of a hybrid
+    # federation (exaflow value flower.server_port).
+    - action: Pass
+      protocol: TCP
+      source:
+        nets: [10.3.0.0/16, 10.4.0.0/16]
+      destination:
+        namespaceSelector: mip.federation-type == 'hybrid'
+        selector: app == 'exaflow-worker' && nodeType == 'globalworker'
+        ports: [8080]
+    # Everything else arriving from a remote cluster, into any namespace.
+    - action: Deny
+      source:
+        nets: [10.3.0.0/16, 10.152.185.0/24, 10.4.0.0/16, 10.152.186.0/24]
+    # Traffic that is not remote: continue with the default tier (Kubernetes
+    # NetworkPolicies) and the profiles.
+    - action: Pass
+  egress:
+    # Controller of a hybrid federation -> remote workers, gRPC.
+    - action: Pass
+      protocol: TCP
+      source:
+        namespaceSelector: mip.federation-type == 'hybrid'
+        selector: app == 'exaflow-controller'
+      destination:
+        nets: [10.3.0.0/16, 10.4.0.0/16]
+        ports: [5672]
+    # No other pod on this cluster talks to a remote cluster.
+    - action: Deny
+      destination:
+        nets: [10.3.0.0/16, 10.152.185.0/24, 10.4.0.0/16, 10.152.186.0/24]
+    - action: Pass

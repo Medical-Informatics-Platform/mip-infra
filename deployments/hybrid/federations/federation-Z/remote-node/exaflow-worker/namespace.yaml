@@ -1,0 +1,7 @@
+---
+# The exported Service must live in a namespace named federation-z: the
+# central controller resolves <service>.federation-z.svc.clusterset.local.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: federation-z

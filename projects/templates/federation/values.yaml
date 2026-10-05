@@ -44,6 +44,10 @@ resources:
       kind: Ingress
     - group: networking.k8s.io
       kind: NetworkPolicy
+    # Submariner service discovery: hybrid federations export Services to the
+    # clusterset (deployments/hybrid/federations/*/mip-infrastructure/submariner-policies/).
+    - group: multicluster.x-k8s.io
+      kind: ServiceExport
     # Gateway API — forward-compat with HAProxy switching from Ingress.
     - group: gateway.networking.k8s.io
       kind: Gateway

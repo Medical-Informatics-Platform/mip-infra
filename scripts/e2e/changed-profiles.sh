@@ -45,6 +45,8 @@ while IFS= read -r f; do
     #     exaflow_images.version manager; `federations-` override PRs) ---
     deployments/shared-apps/exareme2/*)                    exareme2=true ;;
     deployments/shared-apps/mip-stack/*)                   mip_stack=true ;;
+    # remote-node scripts and manifests run on the remote cluster, never on kind
+    deployments/hybrid/federations/*/remote-node/*)        render=true ;;
     deployments/*/federations/*exareme2*)                  exareme2=true; render=true ;;
     deployments/*/federations/*mip-stack*)                 mip_stack=true; render=true ;;
     # remaining federation files (kustomization, netpols, wrapper app)

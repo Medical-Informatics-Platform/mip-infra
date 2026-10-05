@@ -209,3 +209,8 @@ $RECYCLE.BIN/
 *.lnk
 
 # End of https://www.toptal.com/developers/gitignore/api/macos,linux,windows,visualstudiocode,jetbrains+all,vim,helm
+
+# Remote-node join artefacts: broker credentials and generated values files
+deployments/hybrid/federations/*/remote-node/local-values.yaml
+deployments/hybrid/federations/*/remote-node/secrets-values.yaml
+deployments/hybrid/federations/*/remote-node/broker-*.txt

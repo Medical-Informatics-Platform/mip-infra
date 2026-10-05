@@ -69,15 +69,12 @@ spec:
         server: '{{.cluster}}'
         namespace: '{{.namespace}}'
       syncPolicy:
+        # No managedNamespaceMetadata here: the destination of these wrapper
+        # Applications is the Argo CD namespace, so labels set here would land
+        # on it, not on the federation namespaces. The federation and common
+        # namespace labels (name, mip.namespace-type, mip.federation-type) are
+        # managed by the network-policy ApplicationSets in common/security/netpol.yaml,
+        # whose Applications target the namespaces themselves.
         syncOptions: [CreateNamespace=true, ApplyOutOfSyncOnly=true]
-        managedNamespaceMetadata:
-          labels:
-            name: '{{ if contains "federations" .path.path }}{{ if contains "local"
-              .path.path }}{{ .path.basename | lower }}{{ else }}{{ .path.path | dir
-              | base | lower }}{{ end }}{{ else }}{{.namespace}}{{ end }}'
-            app.kubernetes.io/managed-by: argocd
-            '{{ if contains "federations" .path.path }}mip.federation-type{{ else }}mip.namespace-type{{ end }}': '{{ if contains "federations" .path.path }}{{
-              if contains "local" .path.path }}local{{ else }}hybrid{{ end }}{{ else
-              }}common{{ end }}'
         automated:
           selfHeal: true
