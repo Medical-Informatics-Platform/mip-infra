@@ -41,7 +41,10 @@ spec:
             - name: shell
               # Pinned by digest; Renovate follows the tag (renovate.json5, kubernetes manager).
               image: busybox:1.37.0-musl@sha256:5cec3fc171c87218698e85a52af7087de727372aae264a787b8112901a5b0092
-              command: [/bin/sh, -c, cp /bin/busybox /tools/busybox && /tools/busybox --install -s /tools]
+              command:
+                - /bin/sh
+                - -c
+                - cp /bin/busybox /tools/busybox && /tools/busybox --install -s /tools
               resources:
                 requests: {cpu: 10m, memory: 16Mi}
                 limits: {cpu: 100m, memory: 64Mi}

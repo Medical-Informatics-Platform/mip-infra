@@ -1,20 +1,3 @@
-# Notebook RBAC: the MIP notebook operator (mip-jupyter/operator, docs/notebook-operator.md
-# there), the JupyterHub rules it replaced pod creation for, and the account that binds both
-# in every federation namespace.
-#
-# Out-of-band like the files in base/mip-infrastructure/rbac/: Argo CD holds no RBAC write, so
-# what the operator and the hub may do is decided here by an admin. Where they may do it follows
-# the federation namespaces at runtime: the CronJob mip-notebook-rbac-manager
-# (common/notebook-operator/manifests/reconcile.sh) creates a RoleBinding to each ClusterRole in
-# every namespace named federation-* that carries the label mip.namespace-type=federation (set by
-# the federation-network-policies ApplicationSet, common/security/netpol.yaml), removes the
-# bindings it manages from any other namespace, copies the CA of the notebook API proxy into
-# each federation (ConfigMap notebook-api-proxy-ca, read from the cert-manager request status),
-# and keeps the operator's WATCH_NAMESPACES ConfigMap in step. The ValidatingAdmissionPolicies at
-# the end confine that account to exactly those objects in exactly those namespaces, and the hub
-# account to its token Secrets. Nothing in this file names a federation.
-#
-# Operator rules mirror operator/config/rbac/role.yaml at the commit the image was built from.
 ---
 apiVersion: v1
 kind: Namespace
@@ -206,13 +189,15 @@ spec:
       expression: request.operation == 'DELETE'
     # The binding being judged: the incoming object, or the stored one for DELETE (object is null).
     - name: target
-      expression: "variables.isDelete ? oldObject : object"
+      expression: 'variables.isDelete ? oldObject : object'
     - name: targetLabels
-      expression: "has(variables.target.metadata.labels) ? variables.target.metadata.labels : {}"
+      expression: 'has(variables.target.metadata.labels) ? variables.target.metadata.labels
+        : {}'
     - name: subjects
-      expression: "has(variables.target.subjects) ? variables.target.subjects : []"
+      expression: 'has(variables.target.subjects) ? variables.target.subjects : []'
     - name: namespaceLabels
-      expression: "has(namespaceObject.metadata.labels) ? namespaceObject.metadata.labels : {}"
+      expression: 'has(namespaceObject.metadata.labels) ? namespaceObject.metadata.labels
+        : {}'
     - name: allowedRoles
       expression: "['mip-notebook-operator', 'mip-jupyterhub']"
     # A federation namespace: the name prefix and the label set by federation-network-policies.
@@ -224,7 +209,8 @@ spec:
   validations:
     - expression: variables.isDelete || variables.isFederationNamespace
       message: >-
-        mip-notebook-rbac-manager may only create or update RoleBindings in namespaces named
+        mip-notebook-rbac-manager may only create or update RoleBindings in namespaces
+        named
         federation-* that carry the label mip.namespace-type=federation
     - expression: >-
         variables.target.roleRef.apiGroup == 'rbac.authorization.k8s.io' &&
@@ -232,7 +218,8 @@ spec:
         variables.target.roleRef.name in variables.allowedRoles &&
         variables.target.metadata.name == variables.target.roleRef.name
       message: >-
-        the RoleBinding must reference ClusterRole mip-notebook-operator or mip-jupyterhub and
+        the RoleBinding must reference ClusterRole mip-notebook-operator or mip-jupyterhub
+        and
         carry the same name
     - expression: >-
         variables.isDelete ||
@@ -287,38 +274,45 @@ spec:
     - name: isDelete
       expression: request.operation == 'DELETE'
     - name: target
-      expression: "variables.isDelete ? oldObject : object"
+      expression: 'variables.isDelete ? oldObject : object'
     - name: name
       expression: variables.target.metadata.name
     - name: targetLabels
-      expression: "has(variables.target.metadata.labels) ? variables.target.metadata.labels : {}"
+      expression: 'has(variables.target.metadata.labels) ? variables.target.metadata.labels
+        : {}'
     - name: namespaceLabels
-      expression: "has(namespaceObject.metadata.labels) ? namespaceObject.metadata.labels : {}"
+      expression: 'has(namespaceObject.metadata.labels) ? namespaceObject.metadata.labels
+        : {}'
     - name: isFederationNamespace
       expression: >-
         namespaceObject.metadata.name.startsWith('federation-') &&
         'mip.namespace-type' in variables.namespaceLabels &&
         variables.namespaceLabels['mip.namespace-type'] == 'federation'
     - name: dataKeysOnly
-      expression: "!has(variables.target.binaryData)"
+      expression: '!has(variables.target.binaryData)'
     - name: data
-      expression: "has(variables.target.data) ? variables.target.data : {}"
+      expression: 'has(variables.target.data) ? variables.target.data : {}'
     # The CA copy: exactly one key, ca.crt, holding a PEM certificate.
     - name: isProxyCA
       expression: >-
-        variables.isFederationNamespace && variables.name == 'notebook-api-proxy-ca' &&
-        variables.dataKeysOnly && variables.data.size() == 1 && 'ca.crt' in variables.data &&
+        variables.isFederationNamespace && variables.name == 'notebook-api-proxy-ca'
+        &&
+        variables.dataKeysOnly && variables.data.size() == 1 && 'ca.crt' in variables.data
+        &&
         variables.data['ca.crt'].startsWith('-----BEGIN CERTIFICATE-----')
     - name: isState
       expression: >-
         namespaceObject.metadata.name == 'mip-notebooks-system' &&
-        variables.name == 'mip-notebook-operator-watch' && variables.dataKeysOnly &&
+        variables.name == 'mip-notebook-operator-watch' && variables.dataKeysOnly
+        &&
         variables.data.all(k, k in ['WATCH_NAMESPACES', 'restarted_for'])
   validations:
     - expression: variables.isDelete || variables.isProxyCA || variables.isState
       message: >-
-        mip-notebook-rbac-manager may only write ConfigMap notebook-api-proxy-ca (one key, ca.crt,
-        a PEM certificate) in federation namespaces or mip-notebook-operator-watch in
+        mip-notebook-rbac-manager may only write ConfigMap notebook-api-proxy-ca (one
+        key, ca.crt,
+        a PEM certificate) in federation namespaces or mip-notebook-operator-watch
+        in
         mip-notebooks-system
     - expression: "!variables.isDelete || variables.name == 'notebook-api-proxy-ca'"
       message: mip-notebook-rbac-manager may only delete its copies of notebook-api-proxy-ca
@@ -356,11 +350,13 @@ spec:
   matchConditions:
     - name: caller-is-federation-hub
       expression: >-
-        request.userInfo.username.startsWith('system:serviceaccount:federation-') &&
+        request.userInfo.username.startsWith('system:serviceaccount:federation-')
+        &&
         request.userInfo.username.endsWith(':jupyterhub')
   variables:
     - name: owners
-      expression: "has(object.metadata.ownerReferences) ? object.metadata.ownerReferences : []"
+      expression: 'has(object.metadata.ownerReferences) ? object.metadata.ownerReferences
+        : []'
   validations:
     - expression: >-
         has(object.metadata.name) &&
