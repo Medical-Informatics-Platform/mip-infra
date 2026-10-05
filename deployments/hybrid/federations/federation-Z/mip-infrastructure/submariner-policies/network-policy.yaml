@@ -1,26 +1,127 @@
 ---
+# Cross-cluster allows for federation-z on the central cluster. Replaces
+# allow-submariner-cidrs (all ports, controller only). Applied by the Argo CD
+# Application submariner-network-policy (network-policies.yaml) into
+# federation-z next to the chart policies from common/security/federation
+# (federation-default-deny, federation-namespace-isolation). Every rule below
+# allows one component on one port; the default deny covers the rest.
+#
+# Remote node registry: one ipBlock per node in every rule. The same CIDRs
+# appear in common/security/remote-clusters/global-deny-remote-cidrs.yaml and
+# both files change together (scripts/check-remote-cidrs.sh asserts it).
+#   node 1: pod CIDR 10.3.0.0/16 (service CIDR 10.152.185.0/24, not needed here)
+#   node 2: pod CIDR 10.4.0.0/16 (service CIDR 10.152.186.0/24, not needed here)
+#
+# Only pod CIDRs are listed. Remote pods are the source of every flow that
+# reaches this cluster, also when they dial an exported ClusterIP: the
+# Submariner route agent adds SUBMARINER-POSTROUTING ACCEPT rules for
+# <remote pod CIDR> -> <local pod CIDR> ahead of kube-proxy, so the DNATed
+# packets are not masqueraded and the pod sees the remote pod address. No pod
+# on this side dials a remote ClusterIP: the exported worker Service is
+# headless and resolves to remote pod addresses.
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
-  name: allow-submariner-cidrs
+  name: remote-workers-to-controller
   namespace: federation-z
+  labels:
+    app.kubernetes.io/name: federation-remote-access
+    app.kubernetes.io/part-of: federation-z
+    mip.federation-type: hybrid
 spec:
-  # Apply ONLY to exareme2-controller
   podSelector:
     matchLabels:
-      app: exareme2-controller
-  policyTypes:
-    - Ingress
-    - Egress
-
-  # Allow inbound traffic from the remote clusters' Pod CIDRs
+      app: exaflow-controller
+  policyTypes: [Ingress]
   ingress:
+    # Flower client processes started on remote workers call the controller
+    # HTTP API: GET /flower/input, GET /cdes_metadata, POST /flower/result
+    # (exaflow/algorithms/flower/inputdata_preprocessing.py). They reach it via
+    # exaflow-controller-service.federation-z.svc.clusterset.local:5000.
     - from:
-        - ipBlock: {cidr: 10.3.0.0/16}
-        # - one per remote node
-
-  # Allow outbound traffic to the remote clusters' Pod CIDRs
+        - ipBlock: {cidr: 10.3.0.0/16}  # node 1
+        - ipBlock: {cidr: 10.4.0.0/16}  # node 2
+      ports:
+        - protocol: TCP
+          port: 5000
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: controller-to-remote-workers
+  namespace: federation-z
+  labels:
+    app.kubernetes.io/name: federation-remote-access
+    app.kubernetes.io/part-of: federation-z
+    mip.federation-type: hybrid
+spec:
+  podSelector:
+    matchLabels:
+      app: exaflow-controller
+  policyTypes: [Egress]
   egress:
+    # Worker discovery and task execution over gRPC. The controller resolves
+    # every name in controller.workers_dns to A records and dials
+    # <address>:5672 (exaflow/controller/workers_addresses.py); the clusterset
+    # name of the remote headless Service resolves to remote pod addresses.
+    # DNS egress comes from federation-namespace-isolation.
     - to:
-        - ipBlock: {cidr: 10.3.0.0/16}
-        # - one per remote node
+        - ipBlock: {cidr: 10.3.0.0/16}  # node 1
+        - ipBlock: {cidr: 10.4.0.0/16}  # node 2
+      ports:
+        - protocol: TCP
+          port: 5672
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: remote-workers-to-aggregation-server
+  namespace: federation-z
+  labels:
+    app.kubernetes.io/name: federation-remote-access
+    app.kubernetes.io/part-of: federation-z
+    mip.federation-type: hybrid
+spec:
+  podSelector:
+    matchLabels:
+      app: exaflow-aggregation-server
+  policyTypes: [Ingress]
+  ingress:
+    # Every algorithm run on a remote worker streams its partial results to
+    # exaflow-aggregation-service.federation-z.svc.clusterset.local:50051
+    # (exaflow/aggregation_clients/base_aggregation_client.py).
+    - from:
+        - ipBlock: {cidr: 10.3.0.0/16}  # node 1
+        - ipBlock: {cidr: 10.4.0.0/16}  # node 2
+      ports:
+        - protocol: TCP
+          port: 50051
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: remote-workers-to-flower-server
+  namespace: federation-z
+  labels:
+    app.kubernetes.io/name: federation-remote-access
+    app.kubernetes.io/part-of: federation-z
+    mip.federation-type: hybrid
+spec:
+  podSelector:
+    matchLabels:
+      app: exaflow-worker
+      nodeType: globalworker
+  policyTypes: [Ingress]
+  ingress:
+    # The Flower server runs on the global worker: the controller starts it
+    # bound to <global worker pod address>:<flower.server_port> and hands the
+    # same address to every local worker, whose Flower client dials it
+    # (exaflow/controller/services/flower/strategies.py). Remote clients reach
+    # the pod address directly through the tunnel. The port is only open while
+    # a Flower algorithm runs. Value flower.server_port of the exaflow chart.
+    - from:
+        - ipBlock: {cidr: 10.3.0.0/16}  # node 1
+        - ipBlock: {cidr: 10.4.0.0/16}  # node 2
+      ports:
+        - protocol: TCP
+          port: 8080

@@ -1,0 +1,10 @@
+---
+# Publishes exareme2-test-workers-service to the clusterset. The name and
+# namespace must equal the Service; the central controller lists
+# exareme2-test-workers-service.federation-z.svc.clusterset.local in
+# controller.workers_dns.
+apiVersion: multicluster.x-k8s.io/v1alpha1
+kind: ServiceExport
+metadata:
+  name: exareme2-test-workers-service
+  namespace: federation-z

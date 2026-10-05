@@ -1,0 +1,17 @@
+---
+# exaflow local worker for a remote federation-Z node, applied by
+# deploy-worker.sh (which substitutes __WORKER_IDENTIFIER__).
+#
+# The synthetic data model is shipped as the ConfigMap synthetic-data, built by
+# deploy-worker.sh from data/synthetic_v_0_1 (the metadata file and the CSV
+# selected with DATASET, so that every node serves a different dataset) and
+# mounted at /opt/csvs. To serve real data instead, replace the csv-data
+# volume in statefulset.yaml with a hostPath or PersistentVolumeClaim.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+namespace: federation-z
+resources:
+  - namespace.yaml
+  - service.yaml
+  - serviceexport.yaml
+  - statefulset.yaml

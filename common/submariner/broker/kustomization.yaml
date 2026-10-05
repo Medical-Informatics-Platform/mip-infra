@@ -4,7 +4,7 @@ kind: Kustomization
 helmCharts:
   - name: submariner-k8s-broker
     repo: https://raw.githubusercontent.com/submariner-io/submariner-charts/gh-pages/charts
-    version: 0.21.0
+    version: 0.24.1
     releaseName: submariner-broker
     namespace: submariner-k8s-broker
     valuesFile: values.yaml

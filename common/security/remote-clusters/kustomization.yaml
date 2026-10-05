@@ -1,0 +1,6 @@
+---
+# common/security/remote-clusters: cluster-wide confinement of the Submariner
+# remote CIDRs. Plain manifests; kustomize needs no Calico CRD to render them.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources: [global-deny-remote-cidrs.yaml]

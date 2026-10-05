@@ -4,12 +4,12 @@ kind: Kustomization
 helmCharts:
   - name: submariner-operator
     repo: https://raw.githubusercontent.com/submariner-io/submariner-charts/gh-pages/charts
-    version: 0.21.0
+    version: 0.24.1
     releaseName: submariner-operator
     namespace: submariner-operator
     valuesFile: values.yaml
     includeCRDs: true
-resources: [gateway-loadbalancer-ip.yaml]
+resources: [gateway-loadbalancer-ip.yaml, gateway-node-networkd.yaml]
 patches:
   - target:
       group: rbac.authorization.k8s.io
@@ -205,3 +205,46 @@ patches:
       kind: RoleBinding
       metadata:
         name: submariner-routeagent
+  # Rendered by the chart since 0.24 (ConfigMap reads for the Lighthouse
+  # components); created by the operator at runtime like the other
+  # namespaced component RBAC above.
+  - target:
+      group: rbac.authorization.k8s.io
+      kind: Role
+      name: submariner-lighthouse-agent
+    patch: |-
+      $patch: delete
+      apiVersion: rbac.authorization.k8s.io/v1
+      kind: Role
+      metadata:
+        name: submariner-lighthouse-agent
+  - target:
+      group: rbac.authorization.k8s.io
+      kind: RoleBinding
+      name: submariner-lighthouse-agent
+    patch: |-
+      $patch: delete
+      apiVersion: rbac.authorization.k8s.io/v1
+      kind: RoleBinding
+      metadata:
+        name: submariner-lighthouse-agent
+  - target:
+      group: rbac.authorization.k8s.io
+      kind: Role
+      name: submariner-lighthouse-coredns
+    patch: |-
+      $patch: delete
+      apiVersion: rbac.authorization.k8s.io/v1
+      kind: Role
+      metadata:
+        name: submariner-lighthouse-coredns
+  - target:
+      group: rbac.authorization.k8s.io
+      kind: RoleBinding
+      name: submariner-lighthouse-coredns
+    patch: |-
+      $patch: delete
+      apiVersion: rbac.authorization.k8s.io/v1
+      kind: RoleBinding
+      metadata:
+        name: submariner-lighthouse-coredns

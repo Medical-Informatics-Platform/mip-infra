@@ -41,6 +41,18 @@ rules:
   - apiGroups: [coordination.k8s.io]
     resources: [leases]
     verbs: [create, get, list, update]
+  # Since 0.21.1 the operator discovers the service CIDR by listing the
+  # networking.k8s.io ServiceCIDR resources (pkg/discovery/network/generic.go,
+  # client.List); Kubernetes 1.33 changed the error text the previous probe parsed.
+  - apiGroups: [networking.k8s.io]
+    resources: [servicecidrs]
+    verbs: [list]
+  # Since 0.24 the operator's manager caches Broker objects across all
+  # namespaces (cmd/main.go, cache ByObject Broker: AllNamespaces); without
+  # list and watch the cache never syncs and the operator exits.
+  - apiGroups: [submariner.io]
+    resources: [brokers]
+    verbs: [list, watch]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding
@@ -137,6 +149,19 @@ roleRef:
   name: submariner-globalnet
 ---
 # Namespaced Roles/Bindings (Extracted to prevent ArgoCD sync errors)
+#
+# Broker client Role of the account used by the central operator itself.
+# Because the operator references the broker credentials through
+# brokerK8sSecret, it runs a "broker secret syncer" that lists and watches
+# Secrets in this namespace and blocks reconciliation until that list
+# succeeds; secrets get/list/watch must therefore stay. Nothing sensitive may
+# be stored in this namespace besides this account's own token: the IPsec PSK
+# lives in submariner-operator only. serviceaccounts get/list (granted by the
+# upstream chart) is used by no runtime component and is dropped.
+#
+# This account is not handed to remote clusters; remote nodes use their own
+# cluster-<id> accounts bound to the narrower submariner-remote-cluster Role
+# (base/mip-infrastructure/rbac/submariner-remote-admission.yaml).
 apiVersion: rbac.authorization.k8s.io/v1
 kind: Role
 metadata:
@@ -158,9 +183,6 @@ rules:
   - apiGroups: ['']
     resources: [secrets]
     verbs: [get, list, watch]
-  - apiGroups: ['']
-    resources: [serviceaccounts]
-    verbs: [get, list]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding
@@ -304,7 +326,9 @@ subjects:
     name: submariner-routeagent
     namespace: submariner-operator
 ---
-# RBAC for broker secret copier job (used by PostSync hook)
+# RBAC for broker secret copier job (used by PostSync hook). In the broker
+# namespace the hook only reads the client token secret and removes a legacy
+# PSK copy; it writes secrets in the operator namespace only.
 apiVersion: rbac.authorization.k8s.io/v1
 kind: Role
 metadata:
@@ -313,7 +337,7 @@ metadata:
 rules:
   - apiGroups: ['']
     resources: [secrets]
-    verbs: [get, create, update, patch]
+    verbs: [get, delete]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding
@@ -389,4 +413,80 @@ roleRef:
 subjects:
   - kind: ServiceAccount
     name: submariner-operator
+    namespace: submariner-operator
+---
+# Since 0.24 every component reads its own ConfigMap and the shared
+# submariner-global ConfigMap in this namespace at start-up and watches them
+# for changes (admiral pkg/configmap: Get, then List and Watch through an
+# informer); a forbidden Get is fatal for the gateway, the route agent, the
+# Lighthouse agent and the Lighthouse CoreDNS plugin. Upstream grants this in
+# one namespaced Role per component. The gateway's Secret access is granted
+# separately below.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: submariner-component-config
+  namespace: submariner-operator
+rules:
+  - apiGroups: ['']
+    resources: [configmaps]
+    verbs: [get, list, watch]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: submariner-component-config
+  namespace: submariner-operator
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: submariner-component-config
+subjects:
+  - kind: ServiceAccount
+    name: submariner-gateway
+    namespace: submariner-operator
+  - kind: ServiceAccount
+    name: submariner-routeagent
+    namespace: submariner-operator
+  - kind: ServiceAccount
+    name: submariner-lighthouse-agent
+    namespace: submariner-operator
+  - kind: ServiceAccount
+    name: submariner-lighthouse-coredns
+    namespace: submariner-operator
+---
+# Since 0.24 the gateway's libreswan driver creates its certificate signing
+# requestor at start-up in every authentication mode
+# (pkg/cable/libreswan/libreswan.go, NewLibreswan); the requestor runs an
+# informer on the Secrets of this namespace labelled submariner.io/csr-request
+# (admiral pkg/certificate/signing_requestor.go), and the gateway stays passive
+# until that cache syncs ("failed to list Secret ... forbidden" in its log
+# otherwise). RBAC cannot restrict a list to a label, so list and watch cover
+# the namespace; in PSK mode nothing is ever written, so the create, update and
+# delete verbs of the upstream gateway Role (certificate-auth mode,
+# ceIPSecUseOVNCertAuthMode, not enabled here) are not granted. The gateway
+# already receives the PSK and the broker token as mounted volumes, so this
+# read access exposes nothing it does not hold.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: submariner-gateway-secrets
+  namespace: submariner-operator
+rules:
+  - apiGroups: ['']
+    resources: [secrets]
+    verbs: [list, watch]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: submariner-gateway-secrets
+  namespace: submariner-operator
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: submariner-gateway-secrets
+subjects:
+  - kind: ServiceAccount
+    name: submariner-gateway
     namespace: submariner-operator

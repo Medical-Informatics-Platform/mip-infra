@@ -23,9 +23,12 @@
 
   // Built-in managers relied on:
   //  - kustomize: Submariner helmCharts blocks (common/submariner/{broker,operator})
-  //  - kubernetes: HAProxy ingress controller image
+  //  - kubernetes: HAProxy ingress controller image, exaflow worker image on remote nodes
   kubernetes: {
-    managerFilePatterns: ['/^common/haproxy-ingress/manifests/.+\\.yaml$/'],
+    managerFilePatterns: [
+      '/^common/haproxy-ingress/manifests/.+\\.yaml$/',
+      '/^deployments/hybrid/federations/.+/remote-node/exaflow-worker/.+\\.yaml$/',
+    ],
   },
 
   customManagers: [
@@ -112,6 +115,17 @@
         '# renovate: datasource=(?<datasource>\\S+) depName=(?<depName>\\S+)\\n[A-Z_]+_VERSION=(?<currentValue>\\S+)',
       ],
     },
+    // subctl pin in the remote-node scripts (SUBMARINER_VERSION="${SUBMARINER_VERSION:-x.y.z}").
+    // Grouped with the Submariner charts below so subctl moves with the broker and operator.
+    {
+      customType: 'regex',
+      description: 'Annotated SUBMARINER_VERSION defaults in remote-node scripts',
+      managerFilePatterns: ['/^deployments/hybrid/federations/.+/remote-node/.+\\.sh$/'],
+      matchStrings: [
+        '# renovate: datasource=(?<datasource>\\S+) depName=(?<depName>\\S+)\\n[A-Z_]+_VERSION="\\$\\{[A-Z_]+_VERSION:-(?<currentValue>[^}]+)\\}"',
+      ],
+      extractVersionTemplate: '^v(?<version>.*)$',
+    },
   ],
 
   packageRules: [
@@ -125,8 +139,9 @@
       matchFileNames: ['deployments/shared-apps/**'],
       groupName: 'exareme2 baseline',
     },
-    // Submariner broker + operator charts in one PR.
+    // Submariner broker + operator charts and the remote-node subctl pin in one PR.
     { matchManagers: ['kustomize'], groupName: 'submariner' },
+    { matchDepNames: ['submariner-io/releases'], groupName: 'submariner' },
     // Federation overrides: keep their PRs separate from the shared-apps baselines.
     {
       matchFileNames: ['deployments/hybrid/federations/**'],

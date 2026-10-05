@@ -1,0 +1,21 @@
+---
+# Headless Service exported to the clusterset. The controller expects one A
+# record per worker pod behind each name in controller.workers_dns, then dials
+# the pod address the worker reports over gRPC on port 5672.
+apiVersion: v1
+kind: Service
+metadata:
+  name: exareme2-test-workers-service
+  namespace: federation-z
+  labels:
+    app: exaflow-worker
+spec:
+  clusterIP: None
+  selector:
+    app: exaflow-worker
+    nodeType: localworker
+  ports:
+    - name: grpc
+      protocol: TCP
+      port: 5672
+      targetPort: 5672

@@ -22,7 +22,8 @@ spec:
               directories:
                 # Local federations
                 - path: deployments/local/federations/*
-                # Hybrid federations  
+                # Hybrid federations: the same default deny; the allows for the
+                # remote CIDRs live in each federation's submariner-policies
                 - path: deployments/hybrid/federations/*/mip-infrastructure
           - list:
               elements:
@@ -51,18 +52,28 @@ spec:
             - name: federationType
               value: '{{ if contains "local" .path.path }}local{{ else }}hybrid{{
                 end }}'
-            - name: networkPolicy.excludedSelector[0].key
-              value: app
-            - name: networkPolicy.excludedSelector[0].operator
-              value: NotIn
-            - name: networkPolicy.excludedSelector[0].values[0]
-              value: exareme2-worker
+      # No excludedSelector parameter: the isolation policy selects every pod
+      # of the namespace. The former exception (app NotIn exareme2-worker)
+      # matched no pod since exaflow 1.0.0 renamed the labels; excluding the
+      # workers again requires the least-privilege worker policies to land in
+      # the same change (see common/security/README.md).
       destination:
         server: '{{ .cluster }}'
         namespace: '{{ if contains "local" .path.path }}{{ .path.basename | lower
           }}{{ else }}{{ .path.path | dir | base | lower }}{{ end }}'
       syncPolicy:
-        syncOptions: [ApplyOutOfSyncOnly=true]
+        syncOptions: [CreateNamespace=true, ApplyOutOfSyncOnly=true]
+        # Labels of the federation namespace. Cluster-wide policies select
+        # hybrid federations by mip.federation-type, so every federation
+        # namespace must carry it; this Application is the one that manages it.
+        managedNamespaceMetadata:
+          labels:
+            name: '{{ if contains "local" .path.path }}{{ .path.basename | lower }}{{
+              else }}{{ .path.path | dir | base | lower }}{{ end }}'
+            app.kubernetes.io/managed-by: argocd
+            mip.namespace-type: federation
+            mip.federation-type: '{{ if contains "local" .path.path }}local{{ else
+              }}hybrid{{ end }}'
         automated:
           selfHeal: true
 ---
@@ -104,5 +115,43 @@ spec:
         namespace: '{{ .commonNamespace }}'
       syncPolicy:
         syncOptions: [CreateNamespace=true, ApplyOutOfSyncOnly=true]
+        managedNamespaceMetadata:
+          labels:
+            name: '{{ .commonNamespace }}'
+            app.kubernetes.io/managed-by: argocd
+            mip.namespace-type: common
         automated:
           selfHeal: true
+---
+# Cluster-wide confinement of the Submariner remote CIDRs: a Calico Tier and
+# GlobalNetworkPolicy (common/security/remote-clusters). Plain manifests, so
+# kustomize renders them without the Calico CRDs; the cluster serves
+# projectcalico.org/v3 through the Calico API server. No prune, like the other
+# policy Applications: removing the policy from git leaves it on the cluster
+# until deleted by hand.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: netpol-remote-clusters
+  namespace: argocd-mip-team
+  labels:
+    app.kubernetes.io/part-of: common-network-policies
+    app.kubernetes.io/managed-by: argocd
+  annotations:
+    argocd.argoproj.io/note: Confines traffic from and to remote clusters to the exaflow
+      components of hybrid federations
+spec:
+  project: mip-argo-project-security
+  source:
+    repoURL: https://github.com/Medical-Informatics-Platform/mip-infra.git
+    targetRevision: main
+    path: common/security/remote-clusters
+  destination:
+    server: https://kubernetes.default.svc
+    # Nominal: only cluster-scoped objects are rendered. Argo CD still checks
+    # this field against the project destinations.
+    namespace: argocd-mip-team
+  syncPolicy:
+    syncOptions: [ApplyOutOfSyncOnly=true]
+    automated:
+      selfHeal: true

@@ -16,6 +16,8 @@ The repo manages two distinct planes:
 
 Every federation is wrapped in its own [AppProject](#appproject-model) so a misbehaving (or compromised) federation cannot reach into another.
 
+Federations come in two shapes. A **local** federation runs entirely on this cluster (`deployments/local/`). A **hybrid** federation keeps the controller and the user-facing stack here and runs the Exareme2 workers on remote single-node clusters that join this cluster through Submariner (`deployments/hybrid/`). The remote side is not managed by Argo CD; it is installed with the scripts under `remote-node/`. See [hybrid-federations.md](hybrid-federations.md).
+
 ## Argo CD primer
 
 For readers new to Argo CD:
@@ -23,7 +25,7 @@ For readers new to Argo CD:
 | Resource | Purpose | Where in this repo |
 |---|---|---|
 | **Application** | One deployable unit. Maps a Git path to a Kubernetes target. | `deployments/local/federations/<fed>/federation-<fed>.yaml` |
-| **ApplicationSet** | Template that auto-generates many Applications from a generator (list, git, cluster…). | [`base/mip-infrastructure/mip-infrastructure.yaml`](../base/mip-infrastructure/mip-infrastructure.yaml), [`base/argo-projects.yaml`](../base/argo-projects.yaml) |
+| **ApplicationSet** | Template that auto-generates many Applications from a generator (list, git, cluster…). | [`base/mip-infrastructure/mip-infrastructure.yaml`](../base/mip-infrastructure/mip-infrastructure.yaml), [`base/argo-projects/argo-projects.yaml`](../base/argo-projects/argo-projects.yaml) |
 | **AppProject** | Security boundary. Restricts what an Application may pull, deploy, and modify. | [`projects/static/`](../projects/static/), [`projects/templates/federation/`](../projects/templates/federation/) |
 
 GitOps in one sentence: **declare the desired state in Git, let a controller make the cluster match it.** The controller is Argo CD; the desired state is this repo at the revision Argo CD is tracking.
@@ -145,7 +147,7 @@ Steps 0–2 and 6 are manual `kubectl`/`argocd` calls — see [getting-started.m
 mip-infra/
 ├── argo-setup/         # Argo CD HA install overlay (the controller itself)
 ├── base/               # Bootstrap ApplicationSets + out-of-band RBAC
-│   ├── argo-projects.yaml
+│   ├── argo-projects/argo-projects.yaml
 │   └── mip-infrastructure/
 ├── projects/           # AppProject definitions
 │   ├── mip-infrastructure.yaml   # bootstrap project
@@ -159,7 +161,10 @@ mip-infra/
 │   └── submariner/
 ├── deployments/        # Per-environment / per-federation values
 │   ├── local/          # Single-cluster deploy (one cluster, many feds)
-│   ├── hybrid/         # Multi-cluster deploy (skeleton)
+│   ├── hybrid/         # Hybrid federations: controller here, workers on remote nodes
+│   │   └── federations/federation-Z/
+│   │       ├── mip-infrastructure/   # Argo-managed central part
+│   │       └── remote-node/          # scripts + manifests run on each remote node
 │   └── shared-apps/    # Federation-neutral app templates (exareme2, mip-stack)
 ├── docs/               # ← you are here
 ├── scripts/            # Helpers (gen_secrets)
@@ -170,4 +175,5 @@ mip-infra/
 
 - Spin up MIP from scratch → [getting-started.md](getting-started.md)
 - Add a federation, cluster, or shared app → [operations.md](operations.md)
+- Connect a remote node to a hybrid federation → [hybrid-federations.md](hybrid-federations.md)
 - Sanity-check a bootstrap or feature branch → [testing.md](testing.md)

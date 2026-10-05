@@ -1,4 +1,7 @@
 ---
+# Wrapper Application for manual bootstrap or testing. In normal operation the
+# mip-infrastructure ApplicationSet (base/mip-infrastructure) discovers this
+# directory itself; do not apply both.
 apiVersion: argoproj.io/v1alpha1
 kind: Application
 metadata:
@@ -13,7 +16,7 @@ spec:
   source:
     repoURL: https://github.com/Medical-Informatics-Platform/mip-infra.git
     targetRevision: main
-    path: deployments/hybrid/federations/federation-Z
+    path: deployments/hybrid/federations/federation-Z/mip-infrastructure
   destination:
     server: https://kubernetes.default.svc
     namespace: argocd-mip-team

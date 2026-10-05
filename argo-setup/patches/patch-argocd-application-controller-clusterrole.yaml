@@ -83,6 +83,23 @@ rules:
   - apiGroups: [projectcalico.org]
     resources: [ippools]
     verbs: [create, delete, update, deletecollection]
+  # Calico tier and global policy confining the Submariner remote CIDRs
+  # (common/security/remote-clusters, project mip-argo-project-security).
+  # Calico authorises policies inside a tier through the pseudo-resource
+  # tier.globalnetworkpolicies with the tier-qualified name; nothing is
+  # granted on policies of the default tier. Reads come from rule 1.
+  - apiGroups: [projectcalico.org]
+    resources: [tiers]
+    verbs: [create, delete, patch, update]
+  - apiGroups: [projectcalico.org]
+    resources: [tier.globalnetworkpolicies]
+    resourceNames: [remote-clusters.*]
+    verbs: [create, delete, patch, update]
+  # ServiceExports published by hybrid federations
+  # (deployments/hybrid/federations/*/mip-infrastructure/submariner-policies/)
+  - apiGroups: [multicluster.x-k8s.io]
+    resources: [serviceexports]
+    verbs: [create, delete, patch, update]
   - apiGroups: [submariner.io]
     resources:
       - clusters

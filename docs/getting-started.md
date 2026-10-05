@@ -63,8 +63,16 @@ that is applied once, outside Argo CD:
 ```bash
 kubectl apply -f base/mip-infrastructure/rbac/haproxy-public-rbac.yaml
 kubectl apply -f base/mip-infrastructure/rbac/submariner-rbac.yaml
+kubectl apply -f base/mip-infrastructure/rbac/submariner-remote-admission.yaml
 kubectl apply -f base/mip-infrastructure/rbac/eck-beats-rbac.yaml
 ```
+
+`submariner-rbac.yaml` also creates the `submariner-operator` and
+`submariner-k8s-broker` namespaces and the RBAC of the PostSync hook that
+copies the broker credentials for the local operator.
+`submariner-remote-admission.yaml` holds the Role and the admission policies
+for the per-remote broker accounts that remote nodes use
+(see [hybrid-federations.md](hybrid-federations.md)).
 
 ## 4. Bootstrap the AppProjects
 

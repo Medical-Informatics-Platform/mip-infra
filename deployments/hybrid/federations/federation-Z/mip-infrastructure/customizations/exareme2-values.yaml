@@ -2,4 +2,9 @@
 log_level: DEBUG
 namespace: federation-z
 controller:
-  workers_dns: exareme2-workers-service.federation-z.svc.cluster.local,exareme2-test-workers-service.federation-z.svc.clusterset.local
+  # First entry: the chart's headless worker Service in this namespace
+  # (renamed exaflow-* in chart 1.0.0). Second entry: the Service exported by
+  # the remote node through Submariner (remote-node/exaflow-worker/service.yaml).
+  # Every entry must resolve: one failing name aborts worker discovery for all
+  # workers until the next update cycle.
+  workers_dns: exaflow-workers-service.federation-z.svc.cluster.local,exareme2-test-workers-service.federation-z.svc.clusterset.local
