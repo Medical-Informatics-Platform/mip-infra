@@ -15,8 +15,8 @@ CURRENT_BRANCH=$(git rev-parse --abbrev-ref HEAD)
 # Drift check (runs on every branch including main): every static AppProject
 # must explicitly blacklist Role and RoleBinding via namespaceResourceBlacklist.
 # Per-federation AppProjects (rendered from projects/templates/federation/) are
-# exempt because their destinations are pinned to a single federation namespace
-# and so namespaced RBAC is in-scope. Files can opt out with the marker
+# not static files and are not checked here; their whitelist carries no RBAC
+# kinds either. Files can opt out with the marker
 # `# rbac-lint: ignore` near the top.
 # ---------------------------------------------------------------------------
 RBAC_DRIFT=0

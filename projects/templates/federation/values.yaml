@@ -4,7 +4,7 @@ federationName: federation-a  # This will be overridden by ApplicationSet
 sourceRepos:
   - https://github.com/Medical-Informatics-Platform/mip-infra.git
   - git@github.com:Medical-Informatics-Platform/mip-deployments.git
-  - https://github.com/madgik/exareme2
+  - https://github.com/madgik/exaflow
   - https://github.com/Medical-Informatics-Platform/mip
 # Default server for single-cluster deployments
 server: https://kubernetes.default.svc
@@ -36,10 +36,6 @@ resources:
       kind: ServiceAccount
     - group: ''
       kind: Pod
-    - group: rbac.authorization.k8s.io
-      kind: Role
-    - group: rbac.authorization.k8s.io
-      kind: RoleBinding
     - group: networking.k8s.io
       kind: Ingress
     - group: networking.k8s.io
@@ -67,6 +63,11 @@ resources:
       kind: Job
     - group: batch
       kind: CronJob
+    # Pod template for the MIP notebook operator, shipped by the madgik/mip
+    # chart (jupyterhub.spawner: operator). Notebook itself is created by the
+    # hub at runtime and never synced, so it is not listed.
+    - group: notebooks.mip.ebrains.eu
+      kind: NotebookProfile
   # Explicitly blacklist sensitive resources that should not be modified by federation applications
   blacklist:
     - group: rbac.authorization.k8s.io

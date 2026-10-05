@@ -1,0 +1,29 @@
+---
+# MIP notebook operator: builds JupyterHub notebook pods from Notebook /
+# NotebookProfile resources (mip-jupyter/operator). Synced here: the operator
+# Deployment, the mip-notebook-rbac-manager CronJob that binds the operator and
+# the hub in every federation namespace (manifests/reconcile.sh), and the
+# notebook API proxy through which the hubs reach the Kubernetes API
+# (manifests/api-proxy.yaml, certificates from cert-manager). CRDs,
+# ServiceAccounts, RBAC and the admission policies are applied out-of-band from
+# base/mip-infrastructure/notebook-operator/; the NetworkPolicies come from
+# common/security (common-network-policies).
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: mip-notebook-operator
+  namespace: argocd-mip-team
+  finalizers: [resources-finalizer.argocd.argoproj.io]
+spec:
+  project: mip-argo-project-common
+  source:
+    repoURL: https://github.com/Medical-Informatics-Platform/mip-infra.git
+    targetRevision: main
+    path: common/notebook-operator/manifests
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: mip-notebooks-system
+  syncPolicy:
+    syncOptions: [ServerSideApply=true]
+    automated:
+      selfHeal: true

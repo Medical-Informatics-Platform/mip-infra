@@ -34,7 +34,13 @@ Before opening a PR, make sure the key manifests still render cleanly:
 kubectl kustomize argo-setup/patches >/dev/null
 kubectl apply --dry-run=client -f base/argo-projects.yaml >/dev/null
 kubectl apply --dry-run=client -f projects/mip-infrastructure.yaml >/dev/null
+kustomize build common/notebook-operator/manifests >/dev/null
+helm template netpol common/security/federation --set targetNamespace=federation-a >/dev/null
+helm template netpol common/security/common-templates --set targetNamespace=mip-athena >/dev/null
 ```
+
+The e2e render job also checks the nginx configuration of the notebook API
+proxy with `nginx -t` inside the pinned image.
 
 If you changed a specific component under `common/` or `deployments/`, render
 that path too.
@@ -51,8 +57,15 @@ schedulable nodes), applies `argo-setup/patches`, and asserts:
 - PDBs exist and select live pods
 - static AppProjects apply; `default` stays deny-all
 - the repo-server NetworkPolicy actually blocks unauthorized traffic
+- the notebook RBAC reconciler binds only in labelled `federation-*`
+  namespaces, copies the proxy CA there (from a CertificateRequest status, with
+  the cert-manager CRDs installed for the test), prunes elsewhere, and the
+  admission policies reject every other RoleBinding and ConfigMap from its
+  account and every other Secret from the hub (server-side dry runs as those
+  accounts)
 
-CI runs it on PRs touching `argo-setup/**` and the static projects
+CI runs it on PRs touching `argo-setup/**`, the static projects and the
+notebook RBAC files
 ([`kind-argo-smoke.yml`](../.github/workflows/kind-argo-smoke.yml)). Locally:
 
 ```bash

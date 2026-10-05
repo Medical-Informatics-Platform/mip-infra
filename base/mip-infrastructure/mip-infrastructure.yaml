@@ -33,9 +33,11 @@ spec:
               revision: main
               directories:
                 # Cluster-wide applications (not for use for the federations, use deployments/shared-apps instead and not declared here)
+                - path: common/athena-proxy
                 - path: common/datacatalog
                 - path: common/haproxy-ingress
                 - path: common/monitoring
+                - path: common/notebook-operator
                 - path: common/security
                 - path: common/submariner
           - list:

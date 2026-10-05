@@ -1,0 +1,52 @@
+---
+# TLS of the notebook API proxy: a private CA (ten years) issues the serving certificate (one
+# year, renewed by cert-manager thirty days before expiry). The CA's public certificate reaches
+# the hubs as ConfigMap notebook-api-proxy-ca, copied into every federation by the reconciler
+# from the CertificateRequest status (no Secret is read). nginx reads the serving certificate at
+# every handshake, so a renewal needs no restart. The CA key is never rotated: a renewed CA
+# certificate then still validates the serving certificate, and the copy in the federations
+# only changes at the CA's own renewal, after which the hubs are restarted once.
+apiVersion: cert-manager.io/v1
+kind: Issuer
+metadata:
+  name: notebook-api-proxy-selfsigned
+spec:
+  selfSigned: {}
+---
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: notebook-api-proxy-ca
+spec:
+  isCA: true
+  commonName: notebook-api-proxy-ca
+  secretName: notebook-api-proxy-ca
+  duration: 87600h
+  renewBefore: 8760h
+  revisionHistoryLimit: 1
+  privateKey: {algorithm: ECDSA, size: 256, rotationPolicy: Never}
+  issuerRef: {name: notebook-api-proxy-selfsigned, kind: Issuer}
+---
+apiVersion: cert-manager.io/v1
+kind: Issuer
+metadata:
+  name: notebook-api-proxy-ca
+spec:
+  ca:
+    secretName: notebook-api-proxy-ca
+---
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: notebook-api-proxy
+spec:
+  secretName: notebook-api-proxy-tls
+  duration: 8760h
+  renewBefore: 720h
+  revisionHistoryLimit: 1
+  privateKey: {algorithm: ECDSA, size: 256, rotationPolicy: Always}
+  dnsNames:
+    - notebook-api-proxy.mip-notebooks-system.svc
+    - notebook-api-proxy.mip-notebooks-system.svc.cluster.local
+  usages: [server auth]
+  issuerRef: {name: notebook-api-proxy-ca, kind: Issuer}

@@ -1,0 +1,383 @@
+# Notebook RBAC: the MIP notebook operator (mip-jupyter/operator, docs/notebook-operator.md
+# there), the JupyterHub rules it replaced pod creation for, and the account that binds both
+# in every federation namespace.
+#
+# Out-of-band like the files in base/mip-infrastructure/rbac/: Argo CD holds no RBAC write, so
+# what the operator and the hub may do is decided here by an admin. Where they may do it follows
+# the federation namespaces at runtime: the CronJob mip-notebook-rbac-manager
+# (common/notebook-operator/manifests/reconcile.sh) creates a RoleBinding to each ClusterRole in
+# every namespace named federation-* that carries the label mip.namespace-type=federation (set by
+# the federation-network-policies ApplicationSet, common/security/netpol.yaml), removes the
+# bindings it manages from any other namespace, copies the CA of the notebook API proxy into
+# each federation (ConfigMap notebook-api-proxy-ca, read from the cert-manager request status),
+# and keeps the operator's WATCH_NAMESPACES ConfigMap in step. The ValidatingAdmissionPolicies at
+# the end confine that account to exactly those objects in exactly those namespaces, and the hub
+# account to its token Secrets. Nothing in this file names a federation.
+#
+# Operator rules mirror operator/config/rbac/role.yaml at the commit the image was built from.
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: mip-notebooks-system
+  labels:
+    name: mip-notebooks-system
+    mip.namespace-type: common
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: mip-notebook-operator
+  namespace: mip-notebooks-system
+---
+# Bound by RoleBinding in each federation namespace (reconciler). Pods and PVCs: create and read,
+# no delete (garbage collection through the Notebook ownerReference), no Secrets.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: mip-notebook-operator
+rules:
+  - apiGroups: ['']
+    resources: [persistentvolumeclaims, pods]
+    verbs: [create, get, list, watch]
+  - apiGroups: [notebooks.mip.ebrains.eu]
+    resources: [notebookprofiles, notebooks]
+    verbs: [get, list, watch]
+  - apiGroups: [notebooks.mip.ebrains.eu]
+    resources: [notebooks/status]
+    verbs: [get, patch, update]
+---
+# JupyterHub (madgik/mip chart, jupyterhub.rbac.create: false): asks the operator for notebooks
+# and writes each server's token Secret. It can create Secrets but not read, update or delete
+# them. Bound by RoleBinding to the hub ServiceAccount of each federation namespace (reconciler);
+# the rules equal the chart's operator-mode Role.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: mip-jupyterhub
+rules:
+  - apiGroups: [notebooks.mip.ebrains.eu]
+    resources: [notebooks]
+    verbs: [get, list, watch, create, delete]
+  - apiGroups: ['']
+    resources: [secrets]
+    verbs: [create]
+---
+# Leader election (--leader-elect) in the operator's own namespace.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: mip-notebook-operator-leader-election
+  namespace: mip-notebooks-system
+rules:
+  - apiGroups: [coordination.k8s.io]
+    resources: [leases]
+    verbs: [get, list, watch, create, update, patch, delete]
+  - apiGroups: ['']
+    resources: [events]
+    verbs: [create, patch]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: mip-notebook-operator-leader-election
+  namespace: mip-notebooks-system
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: mip-notebook-operator-leader-election
+subjects:
+  - kind: ServiceAccount
+    name: mip-notebook-operator
+    namespace: mip-notebooks-system
+---
+# Reconciler account: binds the two ClusterRoles above in the federation namespaces and keeps
+# the operator's watch list. Runs as the CronJob of the same name (common/notebook-operator).
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: mip-notebook-rbac-manager
+  namespace: mip-notebooks-system
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: mip-notebook-rbac-manager
+rules:
+  - apiGroups: ['']
+    resources: [namespaces]
+    verbs: [get, list]
+  # create and list cannot be restricted by name (the name is not known at authorization time);
+  # the admission policy below restricts what may be created.
+  - apiGroups: [rbac.authorization.k8s.io]
+    resources: [rolebindings]
+    verbs: [create, list]
+  - apiGroups: [rbac.authorization.k8s.io]
+    resources: [rolebindings]
+    resourceNames: [mip-notebook-operator, mip-jupyterhub]
+    verbs: [get, update, patch, delete]
+  # RBAC escalation prevention: binding a ClusterRole the account does not hold itself needs the
+  # bind verb on that ClusterRole.
+  - apiGroups: [rbac.authorization.k8s.io]
+    resources: [clusterroles]
+    resourceNames: [mip-notebook-operator, mip-jupyterhub]
+    verbs: [bind]
+  # The proxy CA ConfigMap in every federation and the state ConfigMap in the operator namespace
+  # (create cannot be restricted by name; the admission policy below pins both). No list: a
+  # cluster-wide list would return every ConfigMap of the cluster; pruning uses named gets.
+  - apiGroups: ['']
+    resources: [configmaps]
+    verbs: [create]
+  - apiGroups: ['']
+    resources: [configmaps]
+    resourceNames: [notebook-api-proxy-ca]
+    verbs: [get, update, patch, delete]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: mip-notebook-rbac-manager
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: mip-notebook-rbac-manager
+subjects:
+  - kind: ServiceAccount
+    name: mip-notebook-rbac-manager
+    namespace: mip-notebooks-system
+---
+# State ConfigMap of the reconciler (mip-notebook-operator-watch: the operator's watch list, read
+# by its Deployment at start, and the restart marker), the restart that makes a new list
+# effective (the Deployment recreates the pod), and the public part of the proxy certificate
+# (CertificateRequest status; no Secret).
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: mip-notebook-rbac-manager
+  namespace: mip-notebooks-system
+rules:
+  - apiGroups: ['']
+    resources: [configmaps]
+    resourceNames: [mip-notebook-operator-watch]
+    verbs: [get, update, patch]
+  - apiGroups: ['']
+    resources: [pods]
+    verbs: [list, delete]
+  - apiGroups: [cert-manager.io]
+    resources: [certificaterequests]
+    verbs: [get, list]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: mip-notebook-rbac-manager
+  namespace: mip-notebooks-system
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: mip-notebook-rbac-manager
+subjects:
+  - kind: ServiceAccount
+    name: mip-notebook-rbac-manager
+    namespace: mip-notebooks-system
+---
+# What the reconciler account may write, judged by the API server on every RoleBinding request
+# it makes (Kubernetes >= 1.30). Administrators, controllers and Argo CD are not matched.
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata:
+  name: mip-notebook-rbac-manager
+spec:
+  # A CEL error or an unavailable policy denies the request rather than letting it through.
+  failurePolicy: Fail
+  matchConstraints:
+    resourceRules:
+      - apiGroups: [rbac.authorization.k8s.io]
+        apiVersions: [v1]
+        operations: [CREATE, UPDATE, DELETE]
+        resources: [rolebindings]
+  matchConditions:
+    - name: caller-is-notebook-rbac-manager
+      expression: >-
+        request.userInfo.username ==
+        'system:serviceaccount:mip-notebooks-system:mip-notebook-rbac-manager'
+  variables:
+    - name: isDelete
+      expression: request.operation == 'DELETE'
+    # The binding being judged: the incoming object, or the stored one for DELETE (object is null).
+    - name: target
+      expression: "variables.isDelete ? oldObject : object"
+    - name: targetLabels
+      expression: "has(variables.target.metadata.labels) ? variables.target.metadata.labels : {}"
+    - name: subjects
+      expression: "has(variables.target.subjects) ? variables.target.subjects : []"
+    - name: namespaceLabels
+      expression: "has(namespaceObject.metadata.labels) ? namespaceObject.metadata.labels : {}"
+    - name: allowedRoles
+      expression: "['mip-notebook-operator', 'mip-jupyterhub']"
+    # A federation namespace: the name prefix and the label set by federation-network-policies.
+    - name: isFederationNamespace
+      expression: >-
+        namespaceObject.metadata.name.startsWith('federation-') &&
+        'mip.namespace-type' in variables.namespaceLabels &&
+        variables.namespaceLabels['mip.namespace-type'] == 'federation'
+  validations:
+    - expression: variables.isDelete || variables.isFederationNamespace
+      message: >-
+        mip-notebook-rbac-manager may only create or update RoleBindings in namespaces named
+        federation-* that carry the label mip.namespace-type=federation
+    - expression: >-
+        variables.target.roleRef.apiGroup == 'rbac.authorization.k8s.io' &&
+        variables.target.roleRef.kind == 'ClusterRole' &&
+        variables.target.roleRef.name in variables.allowedRoles &&
+        variables.target.metadata.name == variables.target.roleRef.name
+      message: >-
+        the RoleBinding must reference ClusterRole mip-notebook-operator or mip-jupyterhub and
+        carry the same name
+    - expression: >-
+        variables.isDelete ||
+        (variables.subjects.size() == 1 &&
+         variables.subjects[0].kind == 'ServiceAccount' &&
+         has(variables.subjects[0].namespace) &&
+         ((variables.target.roleRef.name == 'mip-notebook-operator' &&
+           variables.subjects[0].name == 'mip-notebook-operator' &&
+           variables.subjects[0].namespace == 'mip-notebooks-system') ||
+          (variables.target.roleRef.name == 'mip-jupyterhub' &&
+           variables.subjects[0].name == 'jupyterhub' &&
+           variables.subjects[0].namespace == namespaceObject.metadata.name)))
+      message: >-
+        the subject must be the notebook operator account of mip-notebooks-system
+        (mip-notebook-operator) or the jupyterhub account of the same namespace (mip-jupyterhub)
+    # On DELETE this keeps the account to its own bindings; on CREATE and UPDATE it makes every
+    # binding it writes visible to its own prune step (and adopts the bindings an admin created).
+    - expression: >-
+        'app.kubernetes.io/managed-by' in variables.targetLabels &&
+        variables.targetLabels['app.kubernetes.io/managed-by'] == 'mip-notebook-rbac-manager'
+      message: the RoleBinding must carry the label app.kubernetes.io/managed-by=mip-notebook-rbac-manager
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicyBinding
+metadata:
+  name: mip-notebook-rbac-manager
+spec:
+  policyName: mip-notebook-rbac-manager
+  validationActions: [Deny]
+---
+# What the reconciler account may write as a ConfigMap: the proxy CA copy in federation
+# namespaces (one key, ca.crt) and its own state in the operator namespace. Deletes are limited
+# to the CA copies it manages, so pruning works in namespaces that lost the label.
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata:
+  name: mip-notebook-rbac-manager-configmaps
+spec:
+  failurePolicy: Fail
+  matchConstraints:
+    resourceRules:
+      - apiGroups: ['']
+        apiVersions: [v1]
+        operations: [CREATE, UPDATE, DELETE]
+        resources: [configmaps]
+  matchConditions:
+    - name: caller-is-notebook-rbac-manager
+      expression: >-
+        request.userInfo.username ==
+        'system:serviceaccount:mip-notebooks-system:mip-notebook-rbac-manager'
+  variables:
+    - name: isDelete
+      expression: request.operation == 'DELETE'
+    - name: target
+      expression: "variables.isDelete ? oldObject : object"
+    - name: name
+      expression: variables.target.metadata.name
+    - name: targetLabels
+      expression: "has(variables.target.metadata.labels) ? variables.target.metadata.labels : {}"
+    - name: namespaceLabels
+      expression: "has(namespaceObject.metadata.labels) ? namespaceObject.metadata.labels : {}"
+    - name: isFederationNamespace
+      expression: >-
+        namespaceObject.metadata.name.startsWith('federation-') &&
+        'mip.namespace-type' in variables.namespaceLabels &&
+        variables.namespaceLabels['mip.namespace-type'] == 'federation'
+    - name: dataKeysOnly
+      expression: "!has(variables.target.binaryData)"
+    - name: data
+      expression: "has(variables.target.data) ? variables.target.data : {}"
+    # The CA copy: exactly one key, ca.crt, holding a PEM certificate.
+    - name: isProxyCA
+      expression: >-
+        variables.isFederationNamespace && variables.name == 'notebook-api-proxy-ca' &&
+        variables.dataKeysOnly && variables.data.size() == 1 && 'ca.crt' in variables.data &&
+        variables.data['ca.crt'].startsWith('-----BEGIN CERTIFICATE-----')
+    - name: isState
+      expression: >-
+        namespaceObject.metadata.name == 'mip-notebooks-system' &&
+        variables.name == 'mip-notebook-operator-watch' && variables.dataKeysOnly &&
+        variables.data.all(k, k in ['WATCH_NAMESPACES', 'restarted_for'])
+  validations:
+    - expression: variables.isDelete || variables.isProxyCA || variables.isState
+      message: >-
+        mip-notebook-rbac-manager may only write ConfigMap notebook-api-proxy-ca (one key, ca.crt,
+        a PEM certificate) in federation namespaces or mip-notebook-operator-watch in
+        mip-notebooks-system
+    - expression: "!variables.isDelete || variables.name == 'notebook-api-proxy-ca'"
+      message: mip-notebook-rbac-manager may only delete its copies of notebook-api-proxy-ca
+    - expression: >-
+        'app.kubernetes.io/managed-by' in variables.targetLabels &&
+        variables.targetLabels['app.kubernetes.io/managed-by'] == 'mip-notebook-rbac-manager'
+      message: the ConfigMap must carry the label app.kubernetes.io/managed-by=mip-notebook-rbac-manager
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicyBinding
+metadata:
+  name: mip-notebook-rbac-manager-configmaps
+spec:
+  policyName: mip-notebook-rbac-manager-configmaps
+  validationActions: [Deny]
+---
+# What the hub account may create as a Secret. RBAC cannot restrict create by name or type;
+# this pins it to the per-server token Secret the spawner writes (mip-jupyter
+# docker/hub/notebook_spawner.py: <notebook>-token, owned by the Notebook, notebook names start
+# with jupyter-). Without it the hub could create a Secret of type
+# kubernetes.io/service-account-token and have it filled with a token of any ServiceAccount of
+# the namespace, or pre-create a Secret another workload expects.
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata:
+  name: mip-jupyterhub-secrets
+spec:
+  failurePolicy: Fail
+  matchConstraints:
+    resourceRules:
+      - apiGroups: ['']
+        apiVersions: [v1]
+        operations: [CREATE]
+        resources: [secrets]
+  matchConditions:
+    - name: caller-is-federation-hub
+      expression: >-
+        request.userInfo.username.startsWith('system:serviceaccount:federation-') &&
+        request.userInfo.username.endsWith(':jupyterhub')
+  variables:
+    - name: owners
+      expression: "has(object.metadata.ownerReferences) ? object.metadata.ownerReferences : []"
+  validations:
+    - expression: >-
+        has(object.metadata.name) &&
+        object.metadata.name.startsWith('jupyter-') && object.metadata.name.endsWith('-token')
+      message: jupyterhub may only create the per-server token Secrets named jupyter-*-token
+    - expression: "!has(object.type) || object.type == 'Opaque'"
+      message: jupyterhub may only create Opaque Secrets
+    - expression: >-
+        variables.owners.size() == 1 &&
+        variables.owners[0].apiVersion.startsWith('notebooks.mip.ebrains.eu/') &&
+        variables.owners[0].kind == 'Notebook'
+      message: the token Secret must be owned by its Notebook
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicyBinding
+metadata:
+  name: mip-jupyterhub-secrets
+spec:
+  policyName: mip-jupyterhub-secrets
+  validationActions: [Deny]

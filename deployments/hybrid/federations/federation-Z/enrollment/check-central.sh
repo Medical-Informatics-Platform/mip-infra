@@ -9,7 +9,8 @@
 # DaemonSets, Calico API server and IP pools, Calico tiers, the broker
 # registration of the central cluster, PSK placement, the clusterset.local
 # forward in the cluster CoreDNS, per-remote admission policies, hybrid
-# namespace label, the policy Applications, and subctl (when installed).
+# namespace label, the policy Applications, the API server egress pins of the
+# network-policy charts (apiServer.cidrs), and subctl (when installed).
 #
 # Parameters (environment variables or key=value arguments):
 #   FEDERATION_NS      default federation-z
@@ -197,6 +198,53 @@ for app in "netpol-${FEDERATION_NS}-hybrid" netpol-remote-clusters "${FEDERATION
     warn "Application ${app}" "${st:-not found}"
   fi
 done
+
+# --- API server egress pins ------------------------------------------------------------------------------------
+# The federation and common network-policy charts limit egress on TCP 6443 to apiServer.cidrs, which must cover
+# the kubernetes Service endpoints (the control-plane node addresses after the Service DNAT). An empty list leaves
+# the port open to any address; a list that misses an endpoint cuts the notebook hub and operator off the API.
+repo_root="$(cd "$(dirname "$0")/../../../../.." && pwd)"
+api_cidrs() { # $1 values file: the items of apiServer.cidrs, one per line
+  awk '
+    /^apiServer:/ { in_api = 1; next }
+    in_api && /^[^ ]/ { in_api = 0 }
+    in_api && /^  cidrs:/ { in_cidrs = ($0 !~ /\[\]/); next }
+    in_api && in_cidrs && /^    - / { sub(/^    - */, ""); sub(/[ #].*$/, ""); print; next }
+    in_api && in_cidrs && /^  [^ ]/ { in_cidrs = 0 }
+  ' "$1" | sort -u
+}
+in_cidr() { # $1 IPv4 address, $2 cidr: true when the address lies in the cidr
+  local ip=$1 net=${2%/*} bits=32 a b c d mask
+  [[ "$2" == */* ]] && bits=${2#*/}
+  IFS=. read -r a b c d <<<"$ip"; ip=$(( (a << 24) | (b << 16) | (c << 8) | d ))
+  IFS=. read -r a b c d <<<"$net"; net=$(( (a << 24) | (b << 16) | (c << 8) | d ))
+  mask=$(( bits == 0 ? 0 : (0xFFFFFFFF << (32 - bits)) & 0xFFFFFFFF ))
+  (( (ip & mask) == (net & mask) ))
+}
+fed_cidrs="$(api_cidrs "$repo_root/common/security/federation/values.yaml")"
+common_cidrs="$(api_cidrs "$repo_root/common/security/common-templates/values.yaml")"
+endpoints="$(kc get endpointslices -n default -l kubernetes.io/service-name=kubernetes \
+  -o jsonpath='{range .items[*].endpoints[*]}{.addresses[0]}{"\n"}{end}' 2>/dev/null | sort -u)"
+if [[ "$fed_cidrs" != "$common_cidrs" ]]; then
+  fail "apiServer.cidrs" "common/security/federation/values.yaml and common-templates/values.yaml differ"
+elif [[ -z "$endpoints" ]]; then
+  warn "apiServer.cidrs" "could not read the kubernetes Service endpoints"
+elif [[ -z "$fed_cidrs" ]]; then
+  warn "apiServer.cidrs" "empty: egress on 6443 is open to any address; set it to cover ${endpoints//$'\n'/ }"
+else
+  uncovered=""
+  for ep in $endpoints; do
+    [[ "$ep" == *:* ]] && { uncovered="$uncovered $ep(IPv6, not checked)"; continue; }
+    covered=0
+    for cidr in $fed_cidrs; do in_cidr "$ep" "$cidr" && { covered=1; break; }; done
+    (( covered )) || uncovered="$uncovered $ep"
+  done
+  if [[ -z "$uncovered" ]]; then
+    pass "apiServer.cidrs" "covers the kubernetes endpoints ${endpoints//$'\n'/ }"
+  else
+    fail "apiServer.cidrs" "not covered:${uncovered}; the notebook hub and operator cannot reach the API server"
+  fi
+fi
 
 # --- subctl ------------------------------------------------------------------------------------------------
 if command -v subctl >/dev/null 2>&1; then

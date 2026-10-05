@@ -14,6 +14,10 @@ spec:
       server: https://kubernetes.default.svc
     - namespace: ingress-nginx
       server: https://kubernetes.default.svc
+    - namespace: mip-notebooks-system
+      server: https://kubernetes.default.svc
+    - namespace: mip-athena
+      server: https://kubernetes.default.svc
   clusterResourceWhitelist:
     - group: ''
       kind: Namespace

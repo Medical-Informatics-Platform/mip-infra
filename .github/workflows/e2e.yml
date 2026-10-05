@@ -21,8 +21,11 @@ on:
       - common/haproxy-ingress/**
       - common/monitoring/**
       - common/datacatalog/**
+      - common/security/**
       - common/submariner/**
       - base/mip-infrastructure/rbac/haproxy-public-rbac.yaml
+      - base/mip-infrastructure/notebook-operator/**
+      - common/notebook-operator/**
       - projects/templates/**
       - scripts/e2e/**
       - tests/e2e/**
@@ -190,8 +193,39 @@ jobs:
           kustomize build common/security/remote-clusters >/dev/null
           bash scripts/check-remote-cidrs.sh
           echo "OK: remote-cluster containment renders and CIDRs are consistent"
+          # Network-policy charts: render for both federation types and for every
+          # common namespace of the list generator; the API server pins must be
+          # the same in both charts (the cidrs items under apiServer:).
+          helm template netpol common/security/federation --set targetNamespace=federation-a --set federationType=local >/dev/null
+          helm template netpol common/security/federation --set targetNamespace=federation-z --set federationType=hybrid >/dev/null
+          for ns in mip-common-datacatalog mip-athena mip-notebooks-system; do
+            helm template netpol common/security/common-templates --set targetNamespace="$ns" >/dev/null
+          done
+          api_block() { awk '/^apiServer:/ {a=1; next} a && /^[^ ]/ {a=0} a && /^  cidrs:/ {c=1; next} a && c && /^    - / {print; next} a && c && /^  [^ ]/ {c=0}' "$1"; }
+          diff <(api_block common/security/federation/values.yaml) \
+               <(api_block common/security/common-templates/values.yaml)
+          echo "OK: network-policy charts render and agree on apiServer.cidrs"
           kustomize build deployments/local/federations/federation-A >/dev/null
           echo "OK: federation-A renders"
+          # Notebook operator and its RBAC reconciler: the kind smoke test
+          # exercises the RBAC; here the manifests and the script must build.
+          kustomize build common/notebook-operator/manifests >/dev/null
+          sh -n common/notebook-operator/manifests/reconcile.sh
+          echo "OK: notebook operator and RBAC reconciler render"
+          # nginx configuration of the notebook API proxy: render the template the
+          # way the image entrypoint does and check it with nginx -t against a
+          # throwaway certificate, inside the pinned image.
+          img=$(grep -oE 'nginxinc/nginx-unprivileged:[^ ]+' common/notebook-operator/manifests/api-proxy.yaml)
+          tmp=$(mktemp -d)
+          openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:prime256v1 -nodes -days 1 \
+            -subj /CN=notebook-api-proxy -keyout "$tmp/tls.key" -out "$tmp/tls.crt" 2>/dev/null
+          cp "$tmp/tls.crt" "$tmp/ca.crt" && chmod 644 "$tmp"/*
+          docker run --rm -e KUBERNETES_SERVICE_HOST=10.0.0.1 -e KUBERNETES_SERVICE_PORT=443 \
+            -e NGINX_ENVSUBST_FILTER='^KUBERNETES_SERVICE_(HOST|PORT)$' \
+            -v "$PWD/common/notebook-operator/manifests/api-proxy.conf.template:/etc/nginx/templates/default.conf.template:ro" \
+            -v "$tmp:/etc/notebook-api-proxy/tls:ro" -v "$tmp:/etc/notebook-api-proxy/ca:ro" \
+            "$img" sh -c '/docker-entrypoint.d/20-envsubst-on-templates.sh && nginx -t'
+          echo "OK: notebook API proxy nginx configuration is valid"
           kustomize build tests/e2e/federation >/dev/null
           kustomize build tests/e2e/datacatalog >/dev/null
           kustomize build tests/e2e/eck >/dev/null

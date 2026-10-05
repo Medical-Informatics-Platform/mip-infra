@@ -1,0 +1,93 @@
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: athena-proxy
+data:
+  # Rendered by the nginx image entrypoint (envsubst on /etc/nginx/templates).
+  default.conf.template: |
+    server {
+        listen 8080;
+
+        location = /healthz {
+            return 200 "ok\n";
+        }
+
+        # Only the OpenAI-compatible API is forwarded.
+        location /v1/ {
+            proxy_pass ${CODEX_UPSTREAM}/;
+            proxy_http_version 1.1;
+            proxy_set_header Connection "";
+            # Responses stream (SSE); pass tokens through as they arrive.
+            proxy_buffering off;
+            proxy_request_buffering off;
+            proxy_read_timeout 3600s;
+            proxy_send_timeout 3600s;
+            client_max_body_size 32m;
+        }
+
+        location / {
+            return 404;
+        }
+    }
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: athena-proxy
+  labels:
+    app: athena-proxy
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: athena-proxy
+  template:
+    metadata:
+      labels:
+        app: athena-proxy
+    spec:
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        seccompProfile: {type: RuntimeDefault}
+      containers:
+        - name: nginx
+          image: nginxinc/nginx-unprivileged:1.27-alpine
+          env:
+            # e.g. http://host:8888/v1, no trailing slash.
+            - name: CODEX_UPSTREAM
+              valueFrom:
+                secretKeyRef: {name: codex-llm, key: base-url}
+          ports:
+            - {name: http, containerPort: 8080}
+          readinessProbe:
+            httpGet: {path: /healthz, port: http}
+          resources:
+            requests: {cpu: 10m, memory: 16Mi}
+            limits: {cpu: 500m, memory: 128Mi}
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: {drop: [ALL]}
+          volumeMounts:
+            - {name: templates, mountPath: /etc/nginx/templates, readOnly: true}
+            - {name: conf, mountPath: /etc/nginx/conf.d}
+            - {name: tmp, mountPath: /tmp}
+      volumes:
+        - name: templates
+          configMap: {name: athena-proxy}
+        - name: conf
+          emptyDir: {}
+        - name: tmp
+          emptyDir: {}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: athena-proxy
+spec:
+  selector:
+    app: athena-proxy
+  ports:
+    - {name: http, port: 80, targetPort: http}

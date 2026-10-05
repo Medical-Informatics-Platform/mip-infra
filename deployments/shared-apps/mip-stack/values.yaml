@@ -1,1 +1,14 @@
-
+---
+jupyterhub:
+  # The MIP notebook operator creates notebook pods (common/notebook-operator).
+  spawner: operator
+  # Hub Role/RoleBinding: base/mip-infrastructure/notebook-operator/rbac.yaml.
+  rbac:
+    create: false
+  # Pinned by digest: the tag is mutable and the hub pulls IfNotPresent.
+  image:
+    tag: "0.0.1_candidate@sha256:13bc1980ea8f8dc3a57de75a6e4b0480f2cbb6790a210b7e849ed512ddd0ccd2"
+  codex:
+    # Shared proxy (common/athena-proxy); the real URL is in mip-athena/codex-llm.
+    baseUrl: http://athena-proxy.mip-athena.svc/v1
+    model: qwen3.8-27b-6000pro
