@@ -7,7 +7,7 @@ jupyterhub:
     create: false
   # Pinned by digest: the tag is mutable and the hub pulls IfNotPresent.
   image:
-    tag: 0.0.1_candidate@sha256:13bc1980ea8f8dc3a57de75a6e4b0480f2cbb6790a210b7e849ed512ddd0ccd2
+    tag: 0.1.0@sha256:8e7ce3d9c9adc75f0e59dec0a25ed7fdbb77b5b78d48eab00582d0f2981d57b4
   codex:
     # Shared proxy (common/athena-proxy); the real URL is in mip-athena/codex-llm.
     baseUrl: http://athena-proxy.mip-athena.svc/v1
