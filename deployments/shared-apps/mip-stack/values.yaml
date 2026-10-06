@@ -5,9 +5,12 @@ jupyterhub:
   # Hub Role/RoleBinding: base/mip-infrastructure/notebook-operator/rbac.yaml.
   rbac:
     create: false
-  # Pinned by digest: the tag is mutable and the hub pulls IfNotPresent.
+  # Pinned by digest: the tags are mutable and the nodes pull IfNotPresent.
   image:
-    tag: 0.1.0@sha256:8e7ce3d9c9adc75f0e59dec0a25ed7fdbb77b5b78d48eab00582d0f2981d57b4
+    tag: 0.1.1@sha256:79c4897f8e4b22eb8c6290214e7af9a0ff371608eeb41e2ceef777932a6325e8
+  singleuser:
+    image:
+      tag: 0.1.1@sha256:b459685979182000bf88aa5aab755030ac558f30d83e2981105f3325973722e0
   codex:
     # Shared proxy (common/athena-proxy); the real URL is in mip-athena/codex-llm.
     baseUrl: http://athena-proxy.mip-athena.svc/v1
