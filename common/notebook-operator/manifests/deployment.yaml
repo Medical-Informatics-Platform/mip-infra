@@ -31,7 +31,7 @@ spec:
       containers:
         - name: manager
           # Pinned by digest: the tag is mutable and nodes pull IfNotPresent.
-          image: hbpmip/mip-notebook-operator:0.0.1_candidate@sha256:76ade98e4c8a44a229e1d0c586f704b195eb65f25ae8393269046ca9b013fbce
+          image: hbpmip/mip-notebook-operator:0.1.0@sha256:d28a583ffa774125f53fd0bb43bc143c86e95154dca9829bd38b6ba100297473
           args: [--leader-elect, --health-probe-bind-address=:8081]
           env:
             # Federation namespaces, written by the mip-notebook-rbac-manager CronJob
