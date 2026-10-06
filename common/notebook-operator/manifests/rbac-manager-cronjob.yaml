@@ -7,8 +7,11 @@ apiVersion: batch/v1
 kind: CronJob
 metadata:
   name: mip-notebook-rbac-manager
+  namespace: mip-notebooks-system
   labels:
     app.kubernetes.io/name: mip-notebook-rbac-manager
+  annotations:
+    checkov.io/skip1: CKV_K8S_38=the reconciler authenticates to the API server with this token
 spec:
   schedule: '*/5 * * * *'
   # Forbid keeps runs from overlapping; the deadlines keep a hung run from blocking later ones.

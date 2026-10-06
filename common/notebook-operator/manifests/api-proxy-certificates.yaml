@@ -10,6 +10,7 @@ apiVersion: cert-manager.io/v1
 kind: Issuer
 metadata:
   name: notebook-api-proxy-selfsigned
+  namespace: mip-notebooks-system
 spec:
   selfSigned: {}
 ---
@@ -17,6 +18,7 @@ apiVersion: cert-manager.io/v1
 kind: Certificate
 metadata:
   name: notebook-api-proxy-ca
+  namespace: mip-notebooks-system
 spec:
   isCA: true
   commonName: notebook-api-proxy-ca
@@ -31,6 +33,7 @@ apiVersion: cert-manager.io/v1
 kind: Issuer
 metadata:
   name: notebook-api-proxy-ca
+  namespace: mip-notebooks-system
 spec:
   ca:
     secretName: notebook-api-proxy-ca
@@ -39,6 +42,7 @@ apiVersion: cert-manager.io/v1
 kind: Certificate
 metadata:
   name: notebook-api-proxy
+  namespace: mip-notebooks-system
 spec:
   secretName: notebook-api-proxy-tls
   duration: 8760h

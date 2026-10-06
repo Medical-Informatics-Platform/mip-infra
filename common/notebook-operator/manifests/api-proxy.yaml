@@ -9,8 +9,12 @@ apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: notebook-api-proxy
+  namespace: mip-notebooks-system
   labels:
     app.kubernetes.io/name: notebook-api-proxy
+  annotations:
+    # NetworkPolicy notebook-api-proxy: common/security/common-templates (Helm, not seen by the scan).
+    checkov.io/skip1: CKV2_K8S_6=NetworkPolicy rendered by common/security/common-templates
 spec:
   replicas: 2
   selector:
@@ -24,8 +28,9 @@ spec:
       automountServiceAccountToken: false
       securityContext:
         runAsNonRoot: true
-        # The image's nginx user; fsGroup lets the TLS key be mounted read-only for the group.
-        runAsUser: 101
+        # Any UID works: nginx writes only to the emptyDirs below. The group is the image's nginx
+        # group; fsGroup lets the TLS key be mounted read-only for it.
+        runAsUser: 10101
         runAsGroup: 101
         fsGroup: 101
         seccompProfile: {type: RuntimeDefault}
@@ -83,6 +88,7 @@ apiVersion: v1
 kind: Service
 metadata:
   name: notebook-api-proxy
+  namespace: mip-notebooks-system
 spec:
   selector:
     app.kubernetes.io/name: notebook-api-proxy

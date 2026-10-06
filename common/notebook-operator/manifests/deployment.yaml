@@ -3,8 +3,13 @@ apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: mip-notebook-operator
+  namespace: mip-notebooks-system
   labels:
     app.kubernetes.io/name: mip-notebook-operator
+  annotations:
+    checkov.io/skip1: CKV_K8S_38=the operator manages Notebooks and pods through the API server
+    # NetworkPolicy mip-notebook-operator: common/security/common-templates (Helm, not seen by the scan).
+    checkov.io/skip2: CKV2_K8S_6=NetworkPolicy rendered by common/security/common-templates
 spec:
   replicas: 1
   selector:
@@ -18,6 +23,9 @@ spec:
       serviceAccountName: mip-notebook-operator
       securityContext:
         runAsNonRoot: true
+        # The image's nonroot user.
+        runAsUser: 65532
+        runAsGroup: 65532
         seccompProfile: {type: RuntimeDefault}
       containers:
         - name: manager
