@@ -1,6 +1,6 @@
 ---
 # exaflow local worker, derived from kubernetes/templates/exaflow-localworker.yaml
-# of madgik/exaflow at d72983f4ee248785377b3f26f263c4aa2619fee2 (image 1.1.0,
+# of madgik/exaflow at e8c15aaf37cc8ade5e2fa4de0bb769f7e2da4dac (image 1.2.1,
 # the revision pinned in deployments/shared-apps/exareme2/exareme2.yaml).
 # Reduced to the worker only: the upstream chart always renders the controller
 # and the global worker, which run on the central cluster.
@@ -43,7 +43,7 @@ spec:
             name: synthetic-data  # built by deploy-worker.sh: CDEsMetadata.json and the node's CSV
       containers:
         - name: worker
-          image: madgik/exaflow_worker:1.1.0
+          image: madgik/exaflow_worker:1.2.1
           ports:
             - name: grpc
               containerPort: 5672

@@ -16,6 +16,12 @@ spec:
     # Allow deployment to common namespaces for network policies
     - namespace: mip-common-*
       server: https://kubernetes.default.svc
+    # Jupyter AI proxy (common/athena-proxy) and notebook operator
+    # (common/notebook-operator)
+    - namespace: mip-athena
+      server: https://kubernetes.default.svc
+    - namespace: mip-notebooks-system
+      server: https://kubernetes.default.svc
     # Nominal destination of netpol-remote-clusters, which renders
     # cluster-scoped objects only (common/security/remote-clusters)
     - namespace: argocd-mip-team

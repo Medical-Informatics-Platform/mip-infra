@@ -251,8 +251,8 @@ check_exareme2() {
   probe_curl "$FED_NS_TARGET" "http://exaflow-controller-service:5000/healthcheck" >/dev/null \
     || fail "exaflow controller /healthcheck failed"
   echo "OK: exaflow controller /healthcheck (controller sees its workers)"
-  assert_body "$FED_NS_TARGET" "http://exaflow-controller-service:5000/algorithms" \
-    '"name"' "exaflow /algorithms returns a non-empty algorithm list"
+  assert_body "$FED_NS_TARGET" "http://exaflow-controller-service:5000/specifications/algorithms" \
+    '"name"' "exaflow /specifications/algorithms returns a non-empty algorithm list"
 }
 
 check_mip_stack() {

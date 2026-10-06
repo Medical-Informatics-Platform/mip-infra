@@ -93,6 +93,8 @@ spec:
     - list:
         elements:
           - commonNamespace: mip-common-datacatalog
+          - commonNamespace: mip-athena
+          - commonNamespace: mip-notebooks-system
   goTemplate: true
   template:
     metadata:

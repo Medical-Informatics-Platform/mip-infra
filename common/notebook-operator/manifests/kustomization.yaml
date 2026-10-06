@@ -1,0 +1,18 @@
+---
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+namespace: mip-notebooks-system
+resources:
+  - deployment.yaml
+  - rbac-manager-cronjob.yaml
+  - api-proxy.yaml
+  - api-proxy-certificates.yaml
+# Scripts and configuration as ConfigMaps. No hash suffix: the CronJob starts a new pod per run
+# and the proxy pods are restarted by the reconciler, so both read the current content.
+configMapGenerator:
+  - name: mip-notebook-rbac-manager
+    files: [reconcile.sh]
+  - name: notebook-api-proxy
+    files: [default.conf.template=api-proxy.conf.template]
+generatorOptions:
+  disableNameSuffixHash: true

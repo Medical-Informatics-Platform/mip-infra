@@ -22,3 +22,19 @@ networkPolicy:
     allowTCP: true
     port: 53
   enableDefaultDeny: true
+# Kubernetes API server endpoints: the control-plane node addresses that the kubernetes Service
+# DNAT resolves to (kubectl get endpointslices -n default -l kubernetes.io/service-name=kubernetes).
+# The egress rules on TCP 6443 are limited to these; an empty list admits any address on 6443.
+# Keep equal in common-templates/values.yaml and federation/values.yaml; check-central.sh compares
+# both with the live endpoints.
+apiServer:
+  cidrs:
+    - 148.187.143.17/32
+    - 148.187.143.23/32
+    - 148.187.143.34/32
+  # The JupyterHub pod may always reach the notebook API proxy in mip-notebooks-system on 8443
+  # (common/notebook-operator). hubDirect additionally allows the direct path to apiServer.cidrs
+  # on 6443; set it to false once every hub talks through the proxy (madgik/mip chart value
+  # jupyterhub.apiProxy, how-to-implement-the-notebook-properly.md). The policy name stays
+  # allow-jupyterhub-to-kube-api in both states so Argo CD updates it in place.
+  hubDirect: true

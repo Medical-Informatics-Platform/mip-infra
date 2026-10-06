@@ -64,21 +64,21 @@ spec:
         - protocol: TCP
           port: {{ .Values.networkPolicy.dns.port }}
         {{- end }}
-    {{- if .Values.networkPolicy.allowExternalHTTPS }}
+    {{- $external := not (has .Values.targetNamespace .Values.networkPolicy.noExternalEgress) }}
+    {{- if and .Values.networkPolicy.allowExternalHTTPS $external }}
     # Allow HTTPS egress for external dependencies
     - to: []
       ports:
         - protocol: TCP
           port: 443
     {{- end }}
-    {{- if .Values.networkPolicy.allowExternalHTTP }}
+    {{- if and .Values.networkPolicy.allowExternalHTTP $external }}
     # Allow HTTP egress for external dependencies
     - to: []
       ports:
         - protocol: TCP
           port: 80
     {{- end }}
-{{- if .Values.networkPolicy.enableDefaultDeny }}
 {{- if eq .Values.targetNamespace "mip-common-datacatalog" }}
 ---
 # Policy to allow talking from ingress to frontend services
@@ -137,6 +137,113 @@ spec:
       port: 8089
 
 {{- end }}
+{{- if eq .Values.targetNamespace "mip-athena" }}
+---
+# athena-proxy (common/athena-proxy): only federation notebooks may call it, and
+# only it may reach the Jupyter AI inference server. NetworkPolicy matches IPs,
+# so athenaProxy.upstream must match the URL in Secret mip-athena/codex-llm.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: athena-proxy
+  namespace: {{ .Values.targetNamespace }}
+  labels:
+    app.kubernetes.io/name: common-network-policies
+    app.kubernetes.io/instance: {{ $.Release.Name }}
+    app.kubernetes.io/managed-by: {{ $.Release.Service }}
+    mip.namespace-type: common
+spec:
+  podSelector:
+    matchLabels:
+      app: athena-proxy
+  policyTypes: ["Ingress", "Egress"]
+  ingress:
+  - from:
+    - namespaceSelector:
+        matchLabels:
+          mip.namespace-type: federation
+      podSelector:
+        matchLabels:
+          component: singleuser-server
+    ports:
+    - protocol: TCP
+      port: 8080
+  egress:
+  - to:
+    - ipBlock:
+        cidr: {{ .Values.athenaProxy.upstream.cidr }}
+    ports:
+    - protocol: TCP
+      port: {{ .Values.athenaProxy.upstream.port }}
+{{- end }}
+{{- if eq .Values.targetNamespace "mip-notebooks-system" }}
+---
+# MIP notebook operator, the mip-notebook-rbac-manager CronJob and the notebook
+# API proxy (common/notebook-operator) talk to the Kubernetes API. NetworkPolicy
+# is evaluated after the kubernetes Service DNAT, so the 443 rule above does
+# not cover it: the API server endpoints listen on 6443. With apiServer.cidrs
+# set, only those addresses are reachable on that port.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: mip-notebook-operator
+  namespace: {{ .Values.targetNamespace }}
+  labels:
+    app.kubernetes.io/name: common-network-policies
+    app.kubernetes.io/instance: {{ $.Release.Name }}
+    app.kubernetes.io/managed-by: {{ $.Release.Service }}
+    mip.namespace-type: common
+spec:
+  podSelector:
+    matchExpressions:
+      - key: app.kubernetes.io/name
+        operator: In
+        values: [mip-notebook-operator, mip-notebook-rbac-manager, notebook-api-proxy]
+  policyTypes: ["Egress"]
+  egress:
+  - {{- if .Values.apiServer.cidrs }}
+    to:
+      {{- range .Values.apiServer.cidrs }}
+      - ipBlock:
+          cidr: {{ . | quote }}
+      {{- end }}
+    {{- end }}
+    ports:
+    - protocol: TCP
+      port: 6443
+---
+# The notebook API proxy admits only the JupyterHub pods of federation
+# namespaces (the federation policy always lets the hubs reach it;
+# apiServer.hubDirect there closes the direct path, common/security/federation).
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: notebook-api-proxy
+  namespace: {{ .Values.targetNamespace }}
+  labels:
+    app.kubernetes.io/name: common-network-policies
+    app.kubernetes.io/instance: {{ $.Release.Name }}
+    app.kubernetes.io/managed-by: {{ $.Release.Service }}
+    mip.namespace-type: common
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: notebook-api-proxy
+  policyTypes: ["Ingress"]
+  ingress:
+  - from:
+    - namespaceSelector:
+        matchLabels:
+          mip.namespace-type: federation
+      podSelector:
+        matchLabels:
+          app: jupyterhub
+          component: hub
+    ports:
+    - protocol: TCP
+      port: 8443
+{{- end }}
+{{- if .Values.networkPolicy.enableDefaultDeny }}
 ---
 # Default deny policy for {{ .Values.targetNamespace }}
 apiVersion: networking.k8s.io/v1

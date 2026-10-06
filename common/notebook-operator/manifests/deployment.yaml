@@ -1,0 +1,60 @@
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: mip-notebook-operator
+  namespace: mip-notebooks-system
+  labels:
+    app.kubernetes.io/name: mip-notebook-operator
+  annotations:
+    checkov.io/skip1: CKV_K8S_38=the operator manages Notebooks and pods through the
+      API server
+    # NetworkPolicy mip-notebook-operator: common/security/common-templates (Helm, not seen by the scan).
+    checkov.io/skip2: CKV2_K8S_6=NetworkPolicy rendered by common/security/common-templates
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: mip-notebook-operator
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: mip-notebook-operator
+    spec:
+      serviceAccountName: mip-notebook-operator
+      securityContext:
+        runAsNonRoot: true
+        # The image's nonroot user.
+        runAsUser: 65532
+        runAsGroup: 65532
+        seccompProfile: {type: RuntimeDefault}
+      containers:
+        - name: manager
+          # Pinned by digest: the tag is mutable and nodes pull IfNotPresent.
+          image: hbpmip/mip-notebook-operator:0.1.1@sha256:03f9a3a7d1da22d368d3ce0336629fbbcce31554f36ee30ba43275270fd107a6
+          args: [--leader-elect, --health-probe-bind-address=:8081]
+          env:
+            # Federation namespaces, written by the mip-notebook-rbac-manager CronJob
+            # (reconcile.sh) together with the RoleBindings. The ConfigMap is not in git,
+            # so Argo CD leaves it alone; until the first run the pod waits in
+            # CreateContainerConfigError.
+            - name: WATCH_NAMESPACES
+              valueFrom:
+                configMapKeyRef:
+                  name: mip-notebook-operator-watch
+                  key: WATCH_NAMESPACES
+          ports:
+            - {name: probes, containerPort: 8081}
+          livenessProbe:
+            httpGet: {path: /healthz, port: probes}
+            initialDelaySeconds: 15
+          readinessProbe:
+            httpGet: {path: /readyz, port: probes}
+            initialDelaySeconds: 5
+          resources:
+            requests: {cpu: 10m, memory: 64Mi}
+            limits: {cpu: 500m, memory: 256Mi}
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: {drop: [ALL]}

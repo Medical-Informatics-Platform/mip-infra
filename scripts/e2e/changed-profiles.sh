@@ -66,6 +66,11 @@ while IFS= read -r f; do
     # --- render-only (submariner cannot be meaningfully e2e-tested on a
     #     single kind cluster; its bumped chart versions are build-checked) ---
     common/submariner/*)                                   render=true ;;
+    # network-policy charts and the cluster-wide remote-CIDR containment
+    common/security/*)                                     render=true ;;
+    # notebook operator + RBAC reconciler: the kind smoke test covers the RBAC
+    common/notebook-operator/*)                            render=true ;;
+    base/mip-infrastructure/notebook-operator/*)           render=true ;;
   esac
 done <<< "$changed_files"
 

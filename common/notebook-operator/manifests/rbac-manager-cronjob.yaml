@@ -1,0 +1,88 @@
+---
+# Binds the notebook operator and JupyterHub in every federation namespace and keeps the
+# operator's watch list current: reconcile.sh, mounted from the ConfigMap of the same name.
+# Account, ClusterRole, Role and the admission policies that confine the account are applied
+# out-of-band from base/mip-infrastructure/notebook-operator/rbac.yaml.
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: mip-notebook-rbac-manager
+  namespace: mip-notebooks-system
+  labels:
+    app.kubernetes.io/name: mip-notebook-rbac-manager
+  annotations:
+    checkov.io/skip1: CKV_K8S_38=the reconciler authenticates to the API server with
+      this token
+spec:
+  schedule: '*/5 * * * *'
+  # Forbid keeps runs from overlapping; the deadlines keep a hung run from blocking later ones.
+  concurrencyPolicy: Forbid
+  startingDeadlineSeconds: 120
+  successfulJobsHistoryLimit: 1
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      backoffLimit: 1
+      activeDeadlineSeconds: 300
+      template:
+        metadata:
+          labels:
+            # Selected by the mip-notebooks-system NetworkPolicy for API server egress.
+            app.kubernetes.io/name: mip-notebook-rbac-manager
+        spec:
+          serviceAccountName: mip-notebook-rbac-manager
+          # The projected token is the credential the script uses against the API server.
+          automountServiceAccountToken: true
+          restartPolicy: Never
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 65532
+            runAsGroup: 65532
+            seccompProfile: {type: RuntimeDefault}
+          initContainers:
+            # The kubectl image is distroless and has no shell; busybox lends its static
+            # applets through the shared volume (sh, grep, sed, sort, tr).
+            - name: shell
+              # Pinned by digest; Renovate follows the tag (renovate.json5, kubernetes manager).
+              image: busybox:1.37.0-musl@sha256:5cec3fc171c87218698e85a52af7087de727372aae264a787b8112901a5b0092
+              command:
+                - /bin/sh
+                - -c
+                - cp /bin/busybox /tools/busybox && /tools/busybox --install -s /tools
+              resources:
+                requests: {cpu: 10m, memory: 16Mi}
+                limits: {cpu: 100m, memory: 64Mi}
+              securityContext:
+                allowPrivilegeEscalation: false
+                readOnlyRootFilesystem: true
+                capabilities: {drop: [ALL]}
+              volumeMounts:
+                - {name: tools, mountPath: /tools}
+          containers:
+            - name: reconcile
+              # The kubectl release image; one minor away from the API server at most.
+              image: registry.k8s.io/kubectl:v1.33.13@sha256:a179e6c6f0b87263426fe2a793412c422999d55ffb06d7bc069635468aba3324
+              command: [/tools/sh, /opt/reconcile/reconcile.sh]
+              env:
+                - {name: PATH, value: /tools:/bin}
+                # kubectl writes its discovery cache under these.
+                - {name: HOME, value: /tmp}
+                - {name: KUBECACHEDIR, value: /tmp/kube-cache}
+              resources:
+                requests: {cpu: 10m, memory: 32Mi}
+                limits: {cpu: 200m, memory: 128Mi}
+              securityContext:
+                allowPrivilegeEscalation: false
+                readOnlyRootFilesystem: true
+                capabilities: {drop: [ALL]}
+              volumeMounts:
+                - {name: tools, mountPath: /tools, readOnly: true}
+                - {name: script, mountPath: /opt/reconcile, readOnly: true}
+                - {name: tmp, mountPath: /tmp}
+          volumes:
+            - name: tools
+              emptyDir: {}
+            - name: script
+              configMap: {name: mip-notebook-rbac-manager}
+            - name: tmp
+              emptyDir: {}

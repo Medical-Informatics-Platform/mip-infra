@@ -1,0 +1,25 @@
+---
+# Shared proxy to the Jupyter AI (Codex) inference server for every
+# federation. Notebooks use http://athena-proxy.mip-athena.svc/v1
+# (deployments/shared-apps/mip-stack/values.yaml); the real URL lives only in
+# Secret mip-athena/codex-llm, created by scripts/gen_secrets.sh. Network
+# policies come from common/security (common-network-policies).
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: athena-proxy
+  namespace: argocd-mip-team
+  finalizers: [resources-finalizer.argocd.argoproj.io]
+spec:
+  project: mip-argo-project-common
+  source:
+    repoURL: https://github.com/Medical-Informatics-Platform/mip-infra.git
+    targetRevision: main
+    path: common/athena-proxy/manifests
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: mip-athena
+  syncPolicy:
+    syncOptions: [CreateNamespace=true, ServerSideApply=true]
+    automated:
+      selfHeal: true

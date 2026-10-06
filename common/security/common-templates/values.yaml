@@ -22,8 +22,28 @@ federationAccess:
 networkPolicy:
   allowExternalHTTP: true
   allowExternalHTTPS: true
+  # Namespaces whose pods get no external HTTP or HTTPS egress at all. Nothing in
+  # mip-notebooks-system (operator, reconciler, notebook API proxy) talks to anything but the
+  # API server.
+  noExternalEgress: [mip-notebooks-system]
   dns:
     allowUDP: true
     allowTCP: true
     port: 53
   enableDefaultDeny: true
+# Kubernetes API server endpoints: the control-plane node addresses that the kubernetes Service
+# DNAT resolves to (kubectl get endpointslices -n default -l kubernetes.io/service-name=kubernetes).
+# The egress rules on TCP 6443 are limited to these; an empty list admits any address on 6443.
+# Keep equal in common-templates/values.yaml and federation/values.yaml; check-central.sh compares
+# both with the live endpoints.
+apiServer:
+  cidrs:
+    - 148.187.143.17/32
+    - 148.187.143.23/32
+    - 148.187.143.34/32
+# Jupyter AI inference server reached by athena-proxy (mip-athena only). Keep in
+# sync with the URL in Secret mip-athena/codex-llm.
+athenaProxy:
+  upstream:
+    cidr: 195.251.63.150/32
+    port: 8888

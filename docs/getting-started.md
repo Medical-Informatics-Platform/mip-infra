@@ -65,7 +65,32 @@ kubectl apply -f base/mip-infrastructure/rbac/haproxy-public-rbac.yaml
 kubectl apply -f base/mip-infrastructure/rbac/submariner-rbac.yaml
 kubectl apply -f base/mip-infrastructure/rbac/submariner-remote-admission.yaml
 kubectl apply -f base/mip-infrastructure/rbac/eck-beats-rbac.yaml
+kubectl apply -f https://raw.githubusercontent.com/madgik/mip-jupyter/22c2dc4/operator/config/crd/bases/notebooks.mip.ebrains.eu_notebooks.yaml
+kubectl apply -f https://raw.githubusercontent.com/madgik/mip-jupyter/22c2dc4/operator/config/crd/bases/notebooks.mip.ebrains.eu_notebookprofiles.yaml
+kubectl apply -f base/mip-infrastructure/notebook-operator/rbac.yaml
 ```
+
+The notebook operator CRDs come from `mip-jupyter` at the commit its image was
+built from; bump the commit with the image tag in
+`common/notebook-operator/manifests/deployment.yaml`. `rbac.yaml` holds the
+operator namespace, the ServiceAccounts, the two notebook ClusterRoles, the
+reconciler account and the admission policies that confine it and the hub; it
+names no federation. The reconciler CronJob, synced by Argo CD from
+`common/notebook-operator` with the operator Deployment, binds both ClusterRoles
+in every `federation-*` namespace labelled `mip.namespace-type=federation` and
+writes the operator's watch list, within five minutes of the namespace
+appearing. On a fresh cluster the operator pod waits in
+`CreateContainerConfigError` until that first run. The same Application deploys
+the notebook API proxy with a certificate from cert-manager (present for the
+ingress); the reconciler copies the proxy CA into every federation. The hubs use
+the proxy only after the two switches described in
+[operations.md](operations.md#switching-the-hub-to-the-notebook-api-proxy).
+
+Upgrading from the version of `rbac.yaml` that listed federations: apply the
+file, wait for one reconciler run
+(`kubectl -n federation-<x> get rolebinding mip-notebook-operator mip-jupyterhub`),
+then delete what the file no longer declares, in every federation namespace:
+`kubectl -n federation-<x> delete role jupyterhub rolebinding jupyterhub`.
 
 `submariner-rbac.yaml` also creates the `submariner-operator` and
 `submariner-k8s-broker` namespaces and the RBAC of the PostSync hook that
@@ -121,6 +146,8 @@ MIP workloads expect the secrets listed below to exist **before** their Applicat
 | `keycloak-credentials` | `mip-common-datacatalog` | EBRAINS Keycloak tenant credentials       |
 | `keycloak-credentials` | `federation-<X>`         | Same, repeated per federation namespace   |
 | `mip-secret`           | `federation-<X>`         | Per-federation DB admin/user/password set |
+| `jupyterhub-crypt`     | `federation-<X>`         | JupyterHub `crypt-key`, per federation    |
+| `codex-llm`            | `mip-athena`             | Optional. Key `base-url`: the Jupyter AI (Codex) inference server URL ending in `/v1`, read only by `athena-proxy`; without it Codex is off |
 
 The `mip-secret` schema (one per federation):
 

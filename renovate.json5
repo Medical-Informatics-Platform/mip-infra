@@ -23,10 +23,12 @@
 
   // Built-in managers relied on:
   //  - kustomize: Submariner helmCharts blocks (common/submariner/{broker,operator})
-  //  - kubernetes: HAProxy ingress controller image, exaflow worker image on remote nodes
+  //  - kubernetes: HAProxy ingress controller image, exaflow worker image on remote nodes,
+  //    kubectl image of the notebook RBAC reconciler
   kubernetes: {
     managerFilePatterns: [
       '/^common/haproxy-ingress/manifests/.+\\.yaml$/',
+      '/^common/notebook-operator/manifests/.+\\.yaml$/',
       '/^deployments/hybrid/federations/.+/remote-node/exaflow-worker/.+\\.yaml$/',
     ],
   },
@@ -57,7 +59,7 @@
       description: 'exaflow_images.version in exareme2 shared values',
       managerFilePatterns: ['/^deployments/shared-apps/exareme2/values\\.yaml$/'],
       matchStrings: ['version: (?<currentValue>\\d+\\.\\d+\\.\\d+)'],
-      depNameTemplate: 'madgik/exareme2',
+      depNameTemplate: 'madgik/exaflow',
       datasourceTemplate: 'github-tags',
       versioningTemplate: 'semver',
     },
@@ -135,7 +137,7 @@
     { matchFileNames: ['common/monitoring/eck/values.yaml'], groupName: 'elastic-stack' },
     // exareme2 baseline: chart SHA (Application yaml) + exaflow_images.version (values) in one PR.
     {
-      matchPackageNames: ['madgik/exareme2'],
+      matchPackageNames: ['madgik/exaflow'],
       matchFileNames: ['deployments/shared-apps/**'],
       groupName: 'exareme2 baseline',
     },
