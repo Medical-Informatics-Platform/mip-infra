@@ -273,6 +273,16 @@ for ns in "$NB_UNLABELLED" "$NB_OTHER"; do
 done
 echo "OK: proxy CA from the Ready request distributed to $NB_FED only"
 
+# The admission policies. Every request below is allowed by RBAC alone and must
+# be refused by the named policy (server-side dry run as the account).
+nb_denied() { # $1 account, $2 policy, $3 description; kubectl verb arguments follow; manifest on stdin
+  local who=$1 policy=$2 what=$3 out; shift 3
+  if out=$(kubectl --as="$who" "$@" --dry-run=server -f - 2>&1); then
+    fail "admission allowed: $what"
+  fi
+  grep -q "$policy" <<<"$out" || fail "refused by something other than $policy ($what): $out"
+  echo "OK: denied: $what"
+}
 nb_configmap() { # $1 namespace, $2 name, $3 key, $4 with the managed-by label (yes/no)
   cat <<EOF
 apiVersion: v1
@@ -296,8 +306,6 @@ kubectl -n "$NB_UNLABELLED" create configmap notebook-api-proxy-ca --from-litera
 nb_configmap "$NB_UNLABELLED" notebook-api-proxy-ca ca.crt no \
   | nb_denied "$NB_MANAGER" mip-notebook-rbac-manager-configmaps "delete of a CA ConfigMap it does not manage" delete
 
-# The admission policies. Every request below is allowed by RBAC alone and must
-# be refused by the named policy (server-side dry run as the account).
 nb_binding() { # $1 namespace, $2 name, $3 ClusterRole, $4 subject name, $5 subject namespace
   cat <<EOF
 apiVersion: rbac.authorization.k8s.io/v1
@@ -309,14 +317,6 @@ metadata:
 roleRef: {apiGroup: rbac.authorization.k8s.io, kind: ClusterRole, name: $3}
 subjects: [{kind: ServiceAccount, name: $4, namespace: $5}]
 EOF
-}
-nb_denied() { # $1 account, $2 policy, $3 description; kubectl verb arguments follow; manifest on stdin
-  local who=$1 policy=$2 what=$3 out; shift 3
-  if out=$(kubectl --as="$who" "$@" --dry-run=server -f - 2>&1); then
-    fail "admission allowed: $what"
-  fi
-  grep -q "$policy" <<<"$out" || fail "refused by something other than $policy ($what): $out"
-  echo "OK: denied: $what"
 }
 nb_binding "$NB_OTHER" mip-notebook-operator mip-notebook-operator mip-notebook-operator mip-notebooks-system \
   | nb_denied "$NB_MANAGER" mip-notebook-rbac-manager "binding in a namespace not named federation-*" create
@@ -352,6 +352,9 @@ metadata:
   name: $1
   namespace: $NB_FED
 EOF
+  # API validation requires this before any admission policy sees the request.
+  [[ "$2" != kubernetes.io/service-account-token ]] \
+    || echo '  annotations: {kubernetes.io/service-account.name: jupyterhub}'
   if [[ "$3" == yes ]]; then
     cat <<EOF
   ownerReferences:

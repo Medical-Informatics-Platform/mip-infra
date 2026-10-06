@@ -219,7 +219,7 @@ jobs:
           tmp=$(mktemp -d)
           openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:prime256v1 -nodes -days 1 \
             -subj /CN=notebook-api-proxy -keyout "$tmp/tls.key" -out "$tmp/tls.crt" 2>/dev/null
-          cp "$tmp/tls.crt" "$tmp/ca.crt" && chmod 644 "$tmp"/*
+          cp "$tmp/tls.crt" "$tmp/ca.crt" && chmod 755 "$tmp" && chmod 644 "$tmp"/*
           docker run --rm -e KUBERNETES_SERVICE_HOST=10.0.0.1 -e KUBERNETES_SERVICE_PORT=443 \
             -e NGINX_ENVSUBST_FILTER='^KUBERNETES_SERVICE_(HOST|PORT)$' \
             -v "$PWD/common/notebook-operator/manifests/api-proxy.conf.template:/etc/nginx/templates/default.conf.template:ro" \
