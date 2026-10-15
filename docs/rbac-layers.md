@@ -207,6 +207,8 @@ review the diff, commit snapshot + tag together.
   exists; no glue between it and the install flow.
 
 ### Operability
-- **Renovate (or equivalent) for the upstream Argo tag** in
-  [patches/kustomization.yaml](../argo-setup/patches/kustomization.yaml) so the
-  `sed`-at-install dance in the README becomes obsolete.
+- **Renovate for the upstream Argo tag** — done. A `customManagers` entry in
+  [`renovate.json5`](../renovate.json5) tracks the pinned tag in
+  [patches/kustomization.yaml](../argo-setup/patches/kustomization.yaml) and opens
+  the bump PR automatically; the [Bumping Argo CD](../argo-setup/README.md#bumping-argo-cd)
+  procedure still applies to review and reconcile the ClusterRole diff.
