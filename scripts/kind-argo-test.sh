@@ -177,11 +177,11 @@ step "Notebook RBAC reconciler: bindings follow labelled federation namespaces"
 # production. The reconciler (common/notebook-operator/manifests/reconcile.sh)
 # runs here as its ServiceAccount through impersonation, so RBAC and the
 # admission policies are exercised exactly as from the CronJob. The notebook
-# CRDs come from the pinned mip-jupyter commit (docs/getting-started.md), so
+# CRDs come from the mip-jupyter tag of the operator image (docs/getting-started.md), so
 # the SubjectAccessReviews on notebooks below resolve the resource.
 NB_RBAC="$REPO_ROOT/base/mip-infrastructure/notebook-operator/rbac.yaml"
 NB_SCRIPT="$REPO_ROOT/common/notebook-operator/manifests/reconcile.sh"
-NB_CRD_BASE=https://raw.githubusercontent.com/madgik/mip-jupyter/22c2dc4/operator/config/crd/bases
+NB_CRD_BASE=https://raw.githubusercontent.com/Medical-Informatics-Platform/mip-jupyter/refs/tags/0.1.1/operator/config/crd/bases
 NB_MANAGER=system:serviceaccount:mip-notebooks-system:mip-notebook-rbac-manager
 NB_ARGO="system:serviceaccount:$NS:argocd-application-controller"
 NB_FED=federation-smoke             # labelled: bindings expected
