@@ -65,13 +65,13 @@ kubectl apply -f base/mip-infrastructure/rbac/haproxy-public-rbac.yaml
 kubectl apply -f base/mip-infrastructure/rbac/submariner-rbac.yaml
 kubectl apply -f base/mip-infrastructure/rbac/submariner-remote-admission.yaml
 kubectl apply -f base/mip-infrastructure/rbac/eck-beats-rbac.yaml
-kubectl apply -f https://raw.githubusercontent.com/madgik/mip-jupyter/22c2dc4/operator/config/crd/bases/notebooks.mip.ebrains.eu_notebooks.yaml
-kubectl apply -f https://raw.githubusercontent.com/madgik/mip-jupyter/22c2dc4/operator/config/crd/bases/notebooks.mip.ebrains.eu_notebookprofiles.yaml
+kubectl apply -f https://raw.githubusercontent.com/Medical-Informatics-Platform/mip-jupyter/refs/tags/0.1.1/operator/config/crd/bases/notebooks.mip.ebrains.eu_notebooks.yaml
+kubectl apply -f https://raw.githubusercontent.com/Medical-Informatics-Platform/mip-jupyter/refs/tags/0.1.1/operator/config/crd/bases/notebooks.mip.ebrains.eu_notebookprofiles.yaml
 kubectl apply -f base/mip-infrastructure/notebook-operator/rbac.yaml
 ```
 
-The notebook operator CRDs come from `mip-jupyter` at the commit its image was
-built from; bump the commit with the image tag in
+The notebook operator CRDs come from the `mip-jupyter` tag matching the operator
+image tag (that repository rewrites history, so commits are not stable); bump it with the image tag in
 `common/notebook-operator/manifests/deployment.yaml`. `rbac.yaml` holds the
 operator namespace, the ServiceAccounts, the two notebook ClusterRoles, the
 reconciler account and the admission policies that confine it and the hub; it
