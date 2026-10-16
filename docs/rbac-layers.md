@@ -85,7 +85,7 @@ Source of truth: [`projects/static/`](../projects/static/) and the per-fed templ
 | Project | Destinations | Cluster writes allowed | Namespaced writes allowed | RBAC allowed |
 |---|---|---|---|---|
 | **mip-argo-project-infrastructure** | `argocd-mip-team` | `Namespace` | `Application`, `ApplicationSet`, `AppProject` | none |
-| **mip-argo-project-common** | `ingress-nginx`, `mip-common-datacatalog` | `Namespace`, `PV`, `IngressClass`, `GatewayClass`, `ClusterIssuer` | workload kinds + Ingress + Gateway API routes | ❌ blacklisted |
+| **mip-argo-project-common** | `ingress-nginx`, `mip-common-datacatalog`, `mip-notebooks-system`, `mip-athena` | `Namespace`, `PV`, `IngressClass`, `GatewayClass`, `ClusterIssuer` | workload kinds + Ingress + Gateway API routes | ❌ blacklisted |
 | **mip-argo-project-monitoring** | `elastic-system` | none | workload kinds + Ingress + Gateway API routes + ECK CRs | ❌ blacklisted |
 | **mip-argo-project-federations** *(umbrella)* | `argocd-mip-team` | none | `Application` only | ❌ blacklisted |
 | **mip-argo-project-federation-`<name>`** *(per-fed, templated)* | `federation-<name>`, `argocd-mip-team` | `Namespace` | full workload set + Ingress + Gateway API routes + `NotebookProfile` | ❌ not whitelisted (hub binding by the notebook RBAC reconciler, Layer 4) |
