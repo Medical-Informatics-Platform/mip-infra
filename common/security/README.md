@@ -238,6 +238,16 @@ If applications cannot connect after applying policies:
 - **Federation Type Separation**: Local and hybrid federations have separate access controls
 - **Management Access**: ArgoCD retains full management capabilities
 
+### Accepted risks
+
+- **Notebook examples reach notebooks only after review.** `notebook-examples-sync` (`deployments/shared-apps/mip-stack/notebook-examples`,
+  one per federation) serves only the mip-examples commit pinned in `EXAMPLES_REVISION`. mip-examples master takes
+  changes only through pull requests with one approving review (organization ruleset, no force-push), and when it
+  moves, Renovate opens a PR in this repo that moves the pin: example code reaches notebooks only after review in both
+  repositories. It runs in users' notebooks next to their platform token, so review the compare link of that PR like
+  code. The sync pod uses the federation's 80/443 egress, has no service account token and only the examples volume,
+  which notebooks mount read-only.
+
 ## Remote clusters (Submariner)
 
 Hybrid federations receive the same default deny as local ones (the

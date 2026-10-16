@@ -24,12 +24,13 @@
   // Built-in managers relied on:
   //  - kustomize: Submariner helmCharts blocks (common/submariner/{broker,operator})
   //  - kubernetes: HAProxy ingress controller image, exaflow worker image on remote nodes,
-  //    kubectl image of the notebook RBAC reconciler
+  //    kubectl image of the notebook RBAC reconciler, git image of notebook-examples-sync
   kubernetes: {
     managerFilePatterns: [
       '/^common/haproxy-ingress/manifests/.+\\.yaml$/',
       '/^common/notebook-operator/manifests/.+\\.yaml$/',
       '/^deployments/hybrid/federations/.+/remote-node/exaflow-worker/.+\\.yaml$/',
+      '/^deployments/shared-apps/mip-stack/notebook-examples/.+\\.yaml$/',
     ],
   },
 
@@ -51,6 +52,19 @@
       ],
       datasourceTemplate: 'github-tags',
       versioningTemplate: 'semver',
+    },
+    // Notebook examples: the reviewed mip-examples commit served to the notebooks
+    // (EXAMPLES_REVISION). A PR here moves it to the new tip whenever master moves, so example
+    // code reaches the notebooks only through review in this repo.
+    {
+      customType: 'regex',
+      description: 'Pinned mip-examples commit of notebook-examples-sync',
+      managerFilePatterns: ['/^deployments/shared-apps/mip-stack/notebook-examples/.+\\.yaml$/'],
+      matchStrings: ['name: EXAMPLES_REVISION, value: (?<currentDigest>[a-f0-9]{40})'],
+      depNameTemplate: 'mip-examples',
+      packageNameTemplate: 'https://github.com/Medical-Informatics-Platform/mip-examples',
+      currentValueTemplate: 'master',
+      datasourceTemplate: 'git-refs',
     },
     // exareme2 image version in shared values — grouped with the chart SHA bump
     // so chart and images move in the same PR.
@@ -133,6 +147,9 @@
   packageRules: [
     // Never touch bitnami/kubectl — the submariner copy-secret hook is being removed soon.
     { matchPackageNames: ['bitnami/kubectl'], enabled: false },
+    // Git commits carry no release timestamp for minimumReleaseAge, and the review of the PR is
+    // the gate for the pinned notebook examples anyway.
+    { matchDepNames: ['mip-examples'], minimumReleaseAge: null },
     // Elastic stack moves in lockstep: operator + ES/Kibana/Beats + notifier in one PR.
     { matchFileNames: ['common/monitoring/eck/values.yaml'], groupName: 'elastic-stack' },
     // exareme2 baseline: chart SHA (Application yaml) + exaflow_images.version (values) in one PR.

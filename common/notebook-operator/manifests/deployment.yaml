@@ -45,6 +45,10 @@ spec:
                 configMapKeyRef:
                   name: mip-notebook-operator-watch
                   key: WATCH_NAMESPACES
+            # Shared notebook examples (deployments/shared-apps/mip-stack/notebook-examples): the
+            # namespace's claim, once bound, is mounted read-only at ~/work/.mip-examples in
+            # new notebooks. Unset to start new notebooks without it.
+            - {name: EXAMPLES_CLAIM, value: notebook-examples}
           ports:
             - {name: probes, containerPort: 8081}
           livenessProbe:
