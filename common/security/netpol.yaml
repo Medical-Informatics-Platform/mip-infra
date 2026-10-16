@@ -53,10 +53,11 @@ spec:
               value: '{{ if contains "local" .path.path }}local{{ else }}hybrid{{
                 end }}'
       # No excludedSelector parameter: the isolation policy selects every pod
-      # of the namespace. The former exception (app NotIn exareme2-worker)
-      # matched no pod since exaflow 1.0.0 renamed the labels; excluding the
-      # workers again requires the least-privilege worker policies to land in
-      # the same change (see common/security/README.md).
+      # of the namespace except the notebooks, which get their own rules without
+      # internet (notebook-network-policy.yaml). The former exception
+      # (app NotIn exareme2-worker) matched no pod since exaflow 1.0.0 renamed
+      # the labels; excluding the workers again requires the least-privilege
+      # worker policies to land in the same change (see common/security/README.md).
       destination:
         server: '{{ .cluster }}'
         namespace: '{{ if contains "local" .path.path }}{{ .path.basename | lower

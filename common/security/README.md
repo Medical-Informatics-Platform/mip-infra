@@ -9,7 +9,7 @@ The security policies implement a **zero-trust network model** where:
 - Common namespaces are accessible by federation namespaces for shared services
 - DNS access to `kube-system` is maintained for cluster functionality
 - ArgoCD management access is preserved
-- External HTTP/HTTPS access is allowed for container registries and APIs
+- External HTTP/HTTPS access is allowed for container registries and APIs, except from notebook pods
 
 ## Architecture
 
@@ -35,6 +35,15 @@ The diagram above shows the network isolation architecture with:
 - Traffic to the same namespace
 - DNS queries to `kube-system` (UDP/TCP port 53)
 - External HTTP (port 80) and HTTPS (port 443)
+
+**Notebook pods** (`component: singleuser-server`) are left out of these rules and get their
+own in `federation/templates/notebook-network-policy.yaml`: the same ingress from the namespace
+and egress to the namespace and DNS (`allow-notebook-within-namespace`), plus the Jupyter AI
+proxy (`allow-notebook-to-codex-llm`), but no external HTTP or HTTPS. A NetworkPolicy can only
+add access, so leaving them out of the namespace-wide rules is the only way to take the
+internet away. User code and the shared examples run there next to the user's platform token, so they
+cannot post it out directly; `%pip install` and other downloads fail. DNS still resolves
+outside names.
 
 ### Common Namespaces (`mip-common-*`)
 
@@ -246,7 +255,8 @@ If applications cannot connect after applying policies:
   moves, Renovate opens a PR in this repo that moves the pin: example code reaches notebooks only after review in both
   repositories. It runs in users' notebooks next to their platform token, so review the compare link of that PR like
   code. The sync pod uses the federation's 80/443 egress, has no service account token and only the examples volume,
-  which notebooks mount read-only.
+  which notebooks mount read-only. Notebooks have no internet (`notebook-network-policy.yaml`), so code run from an
+  example cannot send the user's platform token out directly.
 
 ## Remote clusters (Submariner)
 
