@@ -31,7 +31,9 @@ spec:
       containers:
         - name: manager
           # Pinned by digest: the tag is mutable and nodes pull IfNotPresent.
-          image: hbpmip/mip-notebook-operator:0.1.1@sha256:03f9a3a7d1da22d368d3ce0336629fbbcce31554f36ee30ba43275270fd107a6
+          # 0.2.x mounts the notebook examples claim (EXAMPLES_CLAIM); same release as the hub and
+          # single-user images (deployments/shared-apps/mip-stack/values.yaml).
+          image: hbpmip/mip-notebook-operator:0.2.1@sha256:c5df6e9b6102f17fee4fbe6af3c330164e12abd6630f5956486b90fc6c6c543c
           args: [--leader-elect, --health-probe-bind-address=:8081]
           env:
             # Federation namespaces, written by the mip-notebook-rbac-manager CronJob
