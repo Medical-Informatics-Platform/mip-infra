@@ -12,13 +12,17 @@ metadata:
     mip.namespace-type: federation
     mip.federation-type: {{.Values.federationType}}
 spec:
+  # Every pod except the notebooks (component: singleuser-server). This policy opens 80/443 to
+  # the internet, and NetworkPolicies only ever add access, so a notebook policy could not take
+  # it away again; the notebooks' own rules are in notebook-network-policy.yaml.
   podSelector:
-    {{- if .Values.networkPolicy.excludedSelector }}
     matchExpressions:
-      {{- toYaml .Values.networkPolicy.excludedSelector | nindent 6 }}
-    {{- else }}
-    {}
-    {{- end }}
+      - key: component
+        operator: NotIn
+        values: [singleuser-server]
+      {{- with .Values.networkPolicy.excludedSelector }}
+      {{- toYaml . | nindent 6 }}
+      {{- end }}
   policyTypes:
     - Ingress
     - Egress
@@ -110,36 +114,6 @@ spec:
     - protocol: TCP
       port: 6443
   {{- end }}
----
-# Notebook pods reach the shared Jupyter AI proxy (common/athena-proxy); only
-# the proxy reaches the inference server. Name kept so Argo updates in place.
-apiVersion: networking.k8s.io/v1
-kind: NetworkPolicy
-metadata:
-  name: allow-notebook-to-codex-llm
-  namespace: {{.Values.targetNamespace}}
-  labels:
-    app.kubernetes.io/name: federation-network-policy
-    app.kubernetes.io/instance: {{.Release.Name}}
-    app.kubernetes.io/managed-by: {{.Release.Service}}
-    mip.namespace-type: federation
-    mip.federation-type: {{.Values.federationType}}
-spec:
-  podSelector:
-    matchLabels:
-      component: singleuser-server
-  policyTypes: ["Egress"]
-  egress:
-  - to:
-    - namespaceSelector:
-        matchLabels:
-          kubernetes.io/metadata.name: mip-athena
-      podSelector:
-        matchLabels:
-          app: athena-proxy
-    ports:
-    - protocol: TCP
-      port: 8080
 ---
 # Policy to allow talking from ingress to frontend services
 apiVersion: networking.k8s.io/v1
