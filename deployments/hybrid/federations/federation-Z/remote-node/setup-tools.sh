@@ -12,7 +12,7 @@
 set -euo pipefail
 
 # renovate: datasource=github-releases depName=submariner-io/releases
-SUBMARINER_VERSION="${SUBMARINER_VERSION:-0.24.1}"
+SUBMARINER_VERSION="${SUBMARINER_VERSION:-0.24.2}"
 SUBCTL_BIN="${SUBCTL_BIN:-/usr/local/bin/subctl}"
 
 if [[ $EUID -ne 0 ]]; then

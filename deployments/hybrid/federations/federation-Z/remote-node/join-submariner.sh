@@ -29,7 +29,7 @@ set -euo pipefail
 
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # renovate: datasource=github-releases depName=submariner-io/releases
-SUBMARINER_VERSION="${SUBMARINER_VERSION:-0.24.1}"
+SUBMARINER_VERSION="${SUBMARINER_VERSION:-0.24.2}"
 CREDENTIALS_DIR="${CREDENTIALS_DIR:-$PWD}"
 VALUES_FILE="${VALUES_FILE:-${here}/submariner-values.yaml}"
 RELEASE=submariner-operator
