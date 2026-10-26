@@ -46,7 +46,7 @@ spec:
       containers:
         - name: nginx
           # Pinned by digest; Renovate follows the tag (renovate.json5, kubernetes manager).
-          image: nginxinc/nginx-unprivileged:1.30.5-alpine@sha256:ed04ec1ff34502c339ee5c3ae3f855442398edc1d05591e2b98981dcbbd20b1e
+          image: nginxinc/nginx-unprivileged:1.30.5-alpine@sha256:56b8272e43a0525f67aed68d1e0794a712d10e3e45a563e118e9a77c817e6f86
           env:
             # The entrypoint renders /etc/nginx/templates with envsubst; only the two
             # kubelet-set variables are substituted, nginx variables stay untouched.
