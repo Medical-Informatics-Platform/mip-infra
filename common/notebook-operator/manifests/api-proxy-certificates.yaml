@@ -1,8 +1,10 @@
 ---
 # TLS of the notebook API proxy: a private CA (ten years) issues the serving certificate (one
 # year, renewed by cert-manager thirty days before expiry). The CA's public certificate reaches
-# the hubs as ConfigMap notebook-api-proxy-ca, copied into every federation by the reconciler
-# from the CertificateRequest status (no Secret is read). nginx reads the serving certificate at
+# the hubs as ConfigMap mip-notebooks-ca, copied into every federation by the reconciler from
+# the CertificateRequest status (no Secret is read). The CA objects below keep their names; they
+# stay for the spawn API's certificate when the proxy goes
+# (docs/notebooks-without-kubernetes-credentials.md). nginx reads the serving certificate at
 # every handshake, so a renewal needs no restart. The CA key is never rotated: a renewed CA
 # certificate then still validates the serving certificate, and the copy in the federations
 # only changes at the CA's own renewal, after which the hubs are restarted once.

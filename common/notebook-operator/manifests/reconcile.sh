@@ -11,11 +11,12 @@
 #      label is set by the federation-network-policies ApplicationSet, common/security/netpol.yaml).
 #   2. In each: RoleBinding mip-notebook-operator (ClusterRole mip-notebook-operator to the
 #      operator account), RoleBinding mip-jupyterhub (ClusterRole mip-jupyterhub to the hub
-#      account of that namespace), and ConfigMap notebook-api-proxy-ca (the CA the hub trusts
-#      for the notebook API proxy, read from the CertificateRequest status, never from a
-#      Secret). All labelled app.kubernetes.io/managed-by=mip-notebook-rbac-manager.
+#      account of that namespace), and ConfigMap mip-notebooks-ca (the CA the hub trusts for
+#      the notebook API proxy, read from the CertificateRequest status, never from a Secret).
+#      All labelled app.kubernetes.io/managed-by=mip-notebook-rbac-manager.
 #   3. Prune: managed RoleBindings and CA ConfigMaps in any other namespace (the ConfigMaps by
-#      a named get per namespace; the account holds no cluster-wide list on ConfigMaps).
+#      a named get per namespace; the account holds no cluster-wide list on ConfigMaps), and
+#      managed copies under the CA's former name, notebook-api-proxy-ca, everywhere.
 #   4. Operator watch list: ConfigMap mip-notebook-operator-watch, key WATCH_NAMESPACES, read by
 #      the operator Deployment at start. It lists exactly the namespaces where the operator
 #      binding exists: a watched namespace without it is a 403 that blocks the operator's cache
@@ -32,7 +33,10 @@ OPERATOR_SA=mip-notebook-operator
 HUB_SA=jupyterhub
 STATE_CM=mip-notebook-operator-watch
 PROXY=notebook-api-proxy
-CA_CM=notebook-api-proxy-ca
+CA_CM=mip-notebooks-ca
+# Former name of the CA copy; its managed copies are removed. Drop with its RBAC entry
+# (base/mip-infrastructure/notebook-operator/rbac.yaml) once no namespace holds one.
+LEGACY_CA_CM=notebook-api-proxy-ca
 MANAGED="app.kubernetes.io/managed-by=${MANAGER}"
 KUBECTL=${KUBECTL:-kubectl}
 
@@ -167,19 +171,26 @@ $KUBECTL get rolebindings --all-namespaces -l "$MANAGED" \
     echo "pruned rolebinding ${ns}/${name}"
   fi
 done
-#    CA ConfigMaps: a named get in every other namespace (no cluster-wide list of ConfigMaps).
+#    CA ConfigMaps: a named get per namespace (no cluster-wide list of ConfigMaps). The copy
+#    leaves every namespace that is not a federation; the former name leaves every namespace.
 # shellcheck disable=SC2086
 $KUBECTL get namespaces -o jsonpath='{range .items[*]}{.metadata.name}{"\n"}{end}' \
 | while read -r ns; do
   [ -n "$ns" ] || continue
-  printf '%s\n' "$federations" | grep -qx "$ns" && continue
-  # shellcheck disable=SC2086
-  owner=$($KUBECTL -n "$ns" get configmap "$CA_CM" \
-    -o jsonpath='{.metadata.labels.app\.kubernetes\.io/managed-by}' 2>/dev/null || true)
-  [ "$owner" = "$MANAGER" ] || continue
-  # shellcheck disable=SC2086
-  $KUBECTL -n "$ns" delete configmap "$CA_CM" --ignore-not-found >/dev/null
-  echo "pruned configmap ${ns}/${CA_CM}"
+  if printf '%s\n' "$federations" | grep -qx "$ns"; then
+    names=$LEGACY_CA_CM
+  else
+    names="$CA_CM $LEGACY_CA_CM"
+  fi
+  for cm in $names; do
+    # shellcheck disable=SC2086
+    owner=$($KUBECTL -n "$ns" get configmap "$cm" \
+      -o jsonpath='{.metadata.labels.app\.kubernetes\.io/managed-by}' 2>/dev/null || true)
+    [ "$owner" = "$MANAGER" ] || continue
+    # shellcheck disable=SC2086
+    $KUBECTL -n "$ns" delete configmap "$cm" --ignore-not-found >/dev/null
+    echo "pruned configmap ${ns}/${cm}"
+  done
 done
 
 # 4. Watch list and operator restart.

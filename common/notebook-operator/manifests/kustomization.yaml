@@ -7,8 +7,11 @@ resources:
   - rbac-manager-cronjob.yaml
   - api-proxy.yaml
   - api-proxy-certificates.yaml
-# Scripts and configuration as ConfigMaps. No hash suffix: the CronJob starts a new pod per run
-# and the proxy pods are restarted by the reconciler, so both read the current content.
+# Scripts and configuration as ConfigMaps. No hash suffix: this Application does not prune, so
+# every change would leave the previous ConfigMap behind and the Application OutOfSync. The
+# CronJob starts a new pod per run and reads the current script. nginx renders its template only
+# at start: after a change to api-proxy.conf.template, restart the proxy
+# (kubectl -n mip-notebooks-system rollout restart deployment notebook-api-proxy).
 configMapGenerator:
   - name: mip-notebook-rbac-manager
     files: [reconcile.sh]

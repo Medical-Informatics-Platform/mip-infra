@@ -6,12 +6,13 @@
 # forwards the hub's own Authorization header unchanged: RBAC and the admission policies of the
 # API server remain the authorizers. The proxy only narrows what can be reached:
 #
-#   GET  POST        /apis/notebooks.mip.ebrains.eu/v1alpha1/namespaces/federation-<x>/notebooks
+#   POST             /apis/notebooks.mip.ebrains.eu/v1alpha1/namespaces/federation-<x>/notebooks
 #   GET  DELETE      /apis/notebooks.mip.ebrains.eu/v1alpha1/namespaces/federation-<x>/notebooks/<name>
 #   POST             /api/v1/namespaces/federation-<x>/secrets
 #
 # which is what the spawner uses (mip-jupyter docker/hub/notebook_spawner.py: get, create and
-# delete of a Notebook, create of its token Secret). Everything else is answered 404 here.
+# delete of a Notebook, create of its token Secret); no list, watch or delete of the collection.
+# Other paths are answered 404 here, other methods on these paths 403.
 # Locations match the normalized path ($uri) and forward that matched path, never the raw
 # request URI, so the API server sees exactly what was allowed.
 server_tokens off;
@@ -73,9 +74,14 @@ server {
         return 200 "ok\n";
     }
 
-    # Notebook objects of a federation: list and create on the collection, get and delete on one.
-    location ~ "^(/apis/notebooks\.mip\.ebrains\.eu/v1alpha1/namespaces/federation-[a-z0-9-]+/notebooks(/[a-z0-9.-]+)?)$" {
-        limit_except GET POST DELETE { deny all; }
+    # Notebook objects of a federation: create on the collection, get and delete on one.
+    location ~ "^(/apis/notebooks\.mip\.ebrains\.eu/v1alpha1/namespaces/federation-[a-z0-9-]+/notebooks)$" {
+        limit_except POST { deny all; }
+        set $target $1;
+        proxy_pass https://kube_apiserver$target$is_args$args;
+    }
+    location ~ "^(/apis/notebooks\.mip\.ebrains\.eu/v1alpha1/namespaces/federation-[a-z0-9-]+/notebooks/[a-z0-9.-]+)$" {
+        limit_except GET DELETE { deny all; }
         set $target $1;
         proxy_pass https://kube_apiserver$target$is_args$args;
     }

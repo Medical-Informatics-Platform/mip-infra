@@ -236,7 +236,7 @@ got=$(kubectl -n mip-notebooks-system get configmap mip-notebook-operator-watch 
 echo "OK: watch list = $NB_FED, operator restart recorded"
 
 # The proxy CA. Without an issued certificate the reconciler warns and distributes nothing.
-if kubectl -n "$NB_FED" get configmap notebook-api-proxy-ca >/dev/null 2>&1; then
+if kubectl -n "$NB_FED" get configmap mip-notebooks-ca >/dev/null 2>&1; then
   fail "CA ConfigMap distributed although no certificate is issued"
 fi
 # cert-manager is not installed here: its CRDs (the release the e2e harness installs) and the
@@ -259,19 +259,26 @@ spec:
 EOF
 }
 { nb_request 1; echo ---; nb_request 2; } | kubectl -n mip-notebooks-system apply -f - >/dev/null
+# A copy under the CA's former name, as an earlier reconciler left it: removed on the next run.
+kubectl -n "$NB_FED" create configmap notebook-api-proxy-ca --from-literal=ca.crt=x >/dev/null
+kubectl -n "$NB_FED" label configmap notebook-api-proxy-ca \
+  app.kubernetes.io/managed-by=mip-notebook-rbac-manager >/dev/null
 kubectl -n mip-notebooks-system patch certificaterequest notebook-api-proxy-1 --subresource=status \
   --type=merge -p "{\"status\":{\"ca\":\"$(printf 'stale' | base64)\",\"conditions\":[{\"type\":\"Ready\",\"status\":\"False\",\"reason\":\"Pending\",\"lastTransitionTime\":\"2026-01-01T00:00:00Z\"}]}}" >/dev/null
 kubectl -n mip-notebooks-system patch certificaterequest notebook-api-proxy-2 --subresource=status \
   --type=merge -p "{\"status\":{\"ca\":\"$(printf '%s\n' "$NB_TEST_CA" | base64 | tr -d '\n')\",\"conditions\":[{\"type\":\"Ready\",\"status\":\"True\",\"reason\":\"Issued\",\"lastTransitionTime\":\"2026-01-01T00:00:00Z\"}]}}" >/dev/null
 KUBECTL="kubectl --as=$NB_MANAGER" sh "$NB_SCRIPT"
-got=$(kubectl -n "$NB_FED" get configmap notebook-api-proxy-ca -o jsonpath='{.data.ca\.crt}')
+got=$(kubectl -n "$NB_FED" get configmap mip-notebooks-ca -o jsonpath='{.data.ca\.crt}')
 [[ "$got" == "$NB_TEST_CA"* ]] || fail "CA ConfigMap in $NB_FED holds '$got'"
 for ns in "$NB_UNLABELLED" "$NB_OTHER"; do
-  if kubectl -n "$ns" get configmap notebook-api-proxy-ca >/dev/null 2>&1; then
+  if kubectl -n "$ns" get configmap mip-notebooks-ca >/dev/null 2>&1; then
     fail "CA ConfigMap created in $ns"
   fi
 done
-echo "OK: proxy CA from the Ready request distributed to $NB_FED only"
+if kubectl -n "$NB_FED" get configmap notebook-api-proxy-ca >/dev/null 2>&1; then
+  fail "reconciler left the CA copy under its former name in $NB_FED"
+fi
+echo "OK: proxy CA from the Ready request distributed to $NB_FED only, former copy removed"
 
 # The admission policies. Every request below is allowed by RBAC alone and must
 # be refused by the named policy (server-side dry run as the account).
@@ -283,7 +290,9 @@ nb_denied() { # $1 account, $2 policy, $3 description; kubectl verb arguments fo
   grep -q "$policy" <<<"$out" || fail "refused by something other than $policy ($what): $out"
   echo "OK: denied: $what"
 }
-nb_configmap() { # $1 namespace, $2 name, $3 key, $4 with the managed-by label (yes/no)
+# A value the CA rule accepts, on one line.
+NB_TEST_PEM='-----BEGIN CERTIFICATE----- smoke'
+nb_configmap() { # $1 namespace, $2 name, $3 key, $4 with the managed-by label (yes/no), $5 value (default x)
   cat <<EOF
 apiVersion: v1
 kind: ConfigMap
@@ -292,18 +301,20 @@ metadata:
   namespace: $1
 EOF
   [[ "$4" == no ]] || echo '  labels: {app.kubernetes.io/managed-by: mip-notebook-rbac-manager}'
-  echo "data: {$3: x}"
+  echo "data: {$3: '${5:-x}'}"
 }
-nb_configmap "$NB_OTHER" notebook-api-proxy-ca ca.crt yes \
+nb_configmap "$NB_OTHER" mip-notebooks-ca ca.crt yes "$NB_TEST_PEM" \
   | nb_denied "$NB_MANAGER" mip-notebook-rbac-manager-configmaps "CA ConfigMap in a namespace not named federation-*" create
-nb_configmap "$NB_FED" other-name ca.crt yes \
+nb_configmap "$NB_FED" other-name ca.crt yes "$NB_TEST_PEM" \
   | nb_denied "$NB_MANAGER" mip-notebook-rbac-manager-configmaps "ConfigMap with another name" create
-nb_configmap "$NB_FED" notebook-api-proxy-ca other-key yes \
+nb_configmap "$NB_FED" notebook-api-proxy-ca ca.crt yes "$NB_TEST_PEM" \
+  | nb_denied "$NB_MANAGER" mip-notebook-rbac-manager-configmaps "CA ConfigMap under its former name" create
+nb_configmap "$NB_FED" mip-notebooks-ca other-key yes "$NB_TEST_PEM" \
   | nb_denied "$NB_MANAGER" mip-notebook-rbac-manager-configmaps "CA ConfigMap with another key" create
-nb_configmap "$NB_FED" notebook-api-proxy-ca ca.crt yes \
+nb_configmap "$NB_FED" mip-notebooks-ca ca.crt yes \
   | nb_denied "$NB_MANAGER" mip-notebook-rbac-manager-configmaps "CA ConfigMap whose ca.crt is not a PEM certificate" create
-kubectl -n "$NB_UNLABELLED" create configmap notebook-api-proxy-ca --from-literal=ca.crt=x >/dev/null
-nb_configmap "$NB_UNLABELLED" notebook-api-proxy-ca ca.crt no \
+kubectl -n "$NB_UNLABELLED" create configmap mip-notebooks-ca --from-literal=ca.crt=x >/dev/null
+nb_configmap "$NB_UNLABELLED" mip-notebooks-ca ca.crt no \
   | nb_denied "$NB_MANAGER" mip-notebook-rbac-manager-configmaps "delete of a CA ConfigMap it does not manage" delete
 
 nb_binding() { # $1 namespace, $2 name, $3 ClusterRole, $4 subject name, $5 subject namespace
@@ -343,8 +354,10 @@ nb_binding "$NB_UNLABELLED" mip-notebook-operator mip-notebook-operator mip-note
   | kubectl create --dry-run=server -f - >/dev/null || fail "the policy matched a cluster administrator"
 echo "OK: the policy constrains only the reconciler account"
 
-# The hub may create its token Secrets and nothing else.
-nb_secret() { # $1 name, $2 type ('' for none), $3 with ownerReference (yes/no)
+# The hub may create its token Secrets and nothing else: <notebook>-<uid>-token, owned by that
+# Notebook.
+NB_UID=00000000-0000-4000-8000-000000000000
+nb_secret() { # $1 name, $2 type ('' for none), $3 owning Notebook ('' for none)
   cat <<EOF
 apiVersion: v1
 kind: Secret
@@ -355,23 +368,28 @@ EOF
   # API validation requires this before any admission policy sees the request.
   [[ "$2" != kubernetes.io/service-account-token ]] \
     || echo '  annotations: {kubernetes.io/service-account.name: jupyterhub}'
-  if [[ "$3" == yes ]]; then
+  if [[ -n "$3" ]]; then
     cat <<EOF
   ownerReferences:
-    - {apiVersion: notebooks.mip.ebrains.eu/v1alpha1, kind: Notebook, name: ${1%-token}, uid: 00000000-0000-4000-8000-000000000000}
+    - {apiVersion: notebooks.mip.ebrains.eu/v1alpha1, kind: Notebook, name: $3, uid: $NB_UID}
 EOF
   fi
   [[ -z "$2" ]] || echo "type: $2"
   echo 'stringData: {token: x}'
 }
-nb_secret jupyter-smoke-token '' yes | kubectl --as="$NB_HUB" create --dry-run=server -f - >/dev/null \
+nb_secret "jupyter-smoke-$NB_UID-token" '' jupyter-smoke \
+  | kubectl --as="$NB_HUB" create --dry-run=server -f - >/dev/null \
   || fail "jupyterhub cannot create its token Secret"
-echo "OK: jupyterhub can create jupyter-smoke-token"
-nb_secret keycloak-credentials '' yes \
+echo "OK: jupyterhub can create jupyter-smoke-$NB_UID-token"
+nb_secret keycloak-credentials '' jupyter-smoke \
   | nb_denied "$NB_HUB" mip-jupyterhub-secrets "hub Secret with another name" create
-nb_secret jupyter-smoke-token kubernetes.io/service-account-token yes \
+nb_secret "jupyter-other-$NB_UID-token" '' jupyter-smoke \
+  | nb_denied "$NB_HUB" mip-jupyterhub-secrets "hub Secret named after another Notebook" create
+nb_secret "smoke-$NB_UID-token" '' smoke \
+  | nb_denied "$NB_HUB" mip-jupyterhub-secrets "hub Secret owned by a Notebook not named jupyter-*" create
+nb_secret "jupyter-smoke-$NB_UID-token" kubernetes.io/service-account-token jupyter-smoke \
   | nb_denied "$NB_HUB" mip-jupyterhub-secrets "hub Secret of ServiceAccount token type" create
-nb_secret jupyter-smoke-token '' no \
+nb_secret "jupyter-smoke-$NB_UID-token" '' '' \
   | nb_denied "$NB_HUB" mip-jupyterhub-secrets "hub Secret without its Notebook owner" create
 
 # Who can do what in the federation afterwards.
@@ -386,7 +404,9 @@ echo "OK: argocd-application-controller holds no RBAC write"
   || fail "jupyterhub can create pods in $NB_FED"
 [[ "$(kubectl auth can-i create notebooks.notebooks.mip.ebrains.eu -n "$NB_FED" --as="$NB_HUB")" == "yes" ]] \
   || fail "jupyterhub cannot create Notebooks in $NB_FED"
-echo "OK: jupyterhub can create Notebooks but not pods"
+[[ "$(kubectl auth can-i list notebooks.notebooks.mip.ebrains.eu -n "$NB_FED" --as="$NB_HUB")" == "no" ]] \
+  || fail "jupyterhub can list Notebooks in $NB_FED"
+echo "OK: jupyterhub can create Notebooks but not list them, and not pods"
 [[ "$(kubectl auth can-i create pods -n "$NB_FED" \
         --as=system:serviceaccount:mip-notebooks-system:mip-notebook-operator)" == "yes" ]] \
   || fail "notebook operator cannot create pods in $NB_FED"
@@ -401,7 +421,7 @@ KUBECTL="kubectl --as=$NB_MANAGER" sh "$NB_SCRIPT"
 if kubectl -n "$NB_FED" get rolebinding mip-notebook-operator >/dev/null 2>&1; then
   fail "reconciler did not prune its RoleBindings from $NB_FED"
 fi
-if kubectl -n "$NB_FED" get configmap notebook-api-proxy-ca >/dev/null 2>&1; then
+if kubectl -n "$NB_FED" get configmap mip-notebooks-ca >/dev/null 2>&1; then
   fail "reconciler did not prune its CA ConfigMap from $NB_FED"
 fi
 got=$(kubectl -n mip-notebooks-system get configmap mip-notebook-operator-watch \

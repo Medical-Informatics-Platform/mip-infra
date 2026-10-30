@@ -32,8 +32,9 @@ rules:
 ---
 # JupyterHub (madgik/mip chart, jupyterhub.rbac.create: false): asks the operator for notebooks
 # and writes each server's token Secret. It can create Secrets but not read, update or delete
-# them. Bound by RoleBinding to the hub ServiceAccount of each federation namespace (reconciler);
-# the rules equal the chart's operator-mode Role.
+# them. Bound by RoleBinding to the hub ServiceAccount of each federation namespace (reconciler).
+# Only what the spawner calls (mip-jupyter docker/hub/notebook_spawner.py: get, create and delete
+# of one Notebook); no list or watch. The notebook API proxy allows the same requests.
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
 metadata:
@@ -41,7 +42,7 @@ metadata:
 rules:
   - apiGroups: [notebooks.mip.ebrains.eu]
     resources: [notebooks]
-    verbs: [get, list, watch, create, delete]
+    verbs: [get, create, delete]
   - apiGroups: ['']
     resources: [secrets]
     verbs: [create]
@@ -105,15 +106,17 @@ rules:
     resources: [clusterroles]
     resourceNames: [mip-notebook-operator, mip-jupyterhub]
     verbs: [bind]
-  # The proxy CA ConfigMap in every federation and the state ConfigMap in the operator namespace
+  # The CA ConfigMap in every federation and the state ConfigMap in the operator namespace
   # (create cannot be restricted by name; the admission policy below pins both). No list: a
   # cluster-wide list would return every ConfigMap of the cluster; pruning uses named gets.
+  # notebook-api-proxy-ca is the CA copy's former name, kept so the reconciler can remove the
+  # copies it left; drop it once no namespace holds one.
   - apiGroups: ['']
     resources: [configmaps]
     verbs: [create]
   - apiGroups: ['']
     resources: [configmaps]
-    resourceNames: [notebook-api-proxy-ca]
+    resourceNames: [mip-notebooks-ca, notebook-api-proxy-ca]
     verbs: [get, update, patch, delete]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
@@ -250,9 +253,10 @@ spec:
   policyName: mip-notebook-rbac-manager
   validationActions: [Deny]
 ---
-# What the reconciler account may write as a ConfigMap: the proxy CA copy in federation
-# namespaces (one key, ca.crt) and its own state in the operator namespace. Deletes are limited
-# to the CA copies it manages, so pruning works in namespaces that lost the label.
+# What the reconciler account may write as a ConfigMap: the CA copy in federation namespaces
+# (mip-notebooks-ca, one key, ca.crt) and its own state in the operator namespace. Deletes are
+# limited to the CA copies it manages, so pruning works in namespaces that lost the label; the
+# former name notebook-api-proxy-ca may be deleted but no longer written.
 apiVersion: admissionregistration.k8s.io/v1
 kind: ValidatingAdmissionPolicy
 metadata:
@@ -293,9 +297,9 @@ spec:
     - name: data
       expression: 'has(variables.target.data) ? variables.target.data : {}'
     # The CA copy: exactly one key, ca.crt, holding a PEM certificate.
-    - name: isProxyCA
+    - name: isCA
       expression: >-
-        variables.isFederationNamespace && variables.name == 'notebook-api-proxy-ca'
+        variables.isFederationNamespace && variables.name == 'mip-notebooks-ca'
         &&
         variables.dataKeysOnly && variables.data.size() == 1 && 'ca.crt' in variables.data
         &&
@@ -307,15 +311,20 @@ spec:
         &&
         variables.data.all(k, k in ['WATCH_NAMESPACES', 'restarted_for'])
   validations:
-    - expression: variables.isDelete || variables.isProxyCA || variables.isState
+    - expression: variables.isDelete || variables.isCA || variables.isState
       message: >-
-        mip-notebook-rbac-manager may only write ConfigMap notebook-api-proxy-ca (one
-        key, ca.crt,
+        mip-notebook-rbac-manager may only write ConfigMap mip-notebooks-ca (one key,
+        ca.crt,
         a PEM certificate) in federation namespaces or mip-notebook-operator-watch
         in
         mip-notebooks-system
-    - expression: "!variables.isDelete || variables.name == 'notebook-api-proxy-ca'"
-      message: mip-notebook-rbac-manager may only delete its copies of notebook-api-proxy-ca
+    - expression: >-
+        !variables.isDelete ||
+        variables.name in ['mip-notebooks-ca', 'notebook-api-proxy-ca']
+      message: >-
+        mip-notebook-rbac-manager may only delete its copies of mip-notebooks-ca (or of
+        its
+        former name notebook-api-proxy-ca)
     - expression: >-
         'app.kubernetes.io/managed-by' in variables.targetLabels &&
         variables.targetLabels['app.kubernetes.io/managed-by'] == 'mip-notebook-rbac-manager'
@@ -331,10 +340,11 @@ spec:
 ---
 # What the hub account may create as a Secret. RBAC cannot restrict create by name or type;
 # this pins it to the per-server token Secret the spawner writes (mip-jupyter
-# docker/hub/notebook_spawner.py: <notebook>-token, owned by the Notebook, notebook names start
-# with jupyter-). Without it the hub could create a Secret of type
-# kubernetes.io/service-account-token and have it filled with a token of any ServiceAccount of
-# the namespace, or pre-create a Secret another workload expects.
+# docker/hub/notebook_spawner.py: <notebook>-<uid>-token, owned by that Notebook, notebook names
+# start with jupyter-), the rule of mip-jupyter's own operator/config/policy. Without it the hub
+# could create a Secret of type kubernetes.io/service-account-token and have it filled with a
+# token of any ServiceAccount of the namespace, pre-create a Secret another workload expects, or
+# write the Secret another Notebook mounts.
 apiVersion: admissionregistration.k8s.io/v1
 kind: ValidatingAdmissionPolicy
 metadata:
@@ -358,10 +368,6 @@ spec:
       expression: 'has(object.metadata.ownerReferences) ? object.metadata.ownerReferences
         : []'
   validations:
-    - expression: >-
-        has(object.metadata.name) &&
-        object.metadata.name.startsWith('jupyter-') && object.metadata.name.endsWith('-token')
-      message: jupyterhub may only create the per-server token Secrets named jupyter-*-token
     - expression: "!has(object.type) || object.type == 'Opaque'"
       message: jupyterhub may only create Opaque Secrets
     - expression: >-
@@ -369,6 +375,15 @@ spec:
         variables.owners[0].apiVersion.startsWith('notebooks.mip.ebrains.eu/') &&
         variables.owners[0].kind == 'Notebook'
       message: the token Secret must be owned by its Notebook
+    # The name the operator mounts for that Notebook and no other.
+    - expression: >-
+        has(object.metadata.name) && variables.owners.size() == 1 &&
+        variables.owners[0].name.startsWith('jupyter-') &&
+        object.metadata.name == variables.owners[0].name + '-' + variables.owners[0].uid
+        + '-token'
+      message: >-
+        jupyterhub may only create the token Secret <notebook>-<uid>-token of the jupyter-*
+        Notebook that owns it
 ---
 apiVersion: admissionregistration.k8s.io/v1
 kind: ValidatingAdmissionPolicyBinding

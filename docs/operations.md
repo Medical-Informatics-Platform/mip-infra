@@ -83,11 +83,20 @@ before any hub uses it; the hub side needs the `madgik/mip` chart value
 [notebooks-without-kubernetes-credentials.md](notebooks-without-kubernetes-credentials.md)).
 
 1. Check the proxy: `kubectl -n mip-notebooks-system get deploy notebook-api-proxy certificate notebook-api-proxy`
-   and `kubectl -n federation-<x> get configmap notebook-api-proxy-ca`.
+   and `kubectl -n federation-<x> get configmap mip-notebooks-ca`.
 2. Set `jupyterhub.apiProxy.enabled: true` in `deployments/shared-apps/mip-stack/values.yaml`;
    sync; spawn a notebook.
 3. Set `apiServer.hubDirect: false` in `common/security/federation/values.yaml`; sync; spawn
    again. The hub can no longer reach the API server directly.
+
+nginx renders `api-proxy.conf.template` only at start, and Argo CD updates the ConfigMap in
+place. After a change to the template, restart the proxy:
+`kubectl -n mip-notebooks-system rollout restart deployment notebook-api-proxy`.
+
+`base/mip-infrastructure/notebook-operator/rbac.yaml` is applied by hand
+([getting-started.md](getting-started.md)); re-apply it whenever it changes, together with the
+merge that syncs `reconcile.sh`. Until both are in place, the reconciler's runs may fail on the
+CA ConfigMap with a warning; the bindings are unaffected.
 
 ## Adding a remote node to a hybrid federation
 
