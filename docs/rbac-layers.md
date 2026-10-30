@@ -171,7 +171,7 @@ The hub's ClusterRole `mip-jupyterhub` only covers `notebooks` and `secrets: cre
 | New AppProject forgets RBAC blacklist | 2 | ✅ pre-commit blocks |
 | New federation forgets notebook RBAC | 4 | ✅ nothing to add: bindings and watch list follow the namespace label |
 | Reconciler account compromised | 4 | ✅ admission policies limit it to the two notebook bindings and the CA ConfigMap in `federation-*` namespaces, plus its own state ConfigMap |
-| Hub pod reaches the API server | 4 | ⚠ today (`apiServer.hubDirect: true`, pinned to the control-plane addresses); the notebook API proxy is deployed and takes over once the chart points the hub at it; removal of every hub credential: [how-to-implement-the-notebook-properly.md](../how-to-implement-the-notebook-properly.md) |
+| Hub pod reaches the API server | 4 | ⚠ today (`apiServer.hubDirect: true`, pinned to the control-plane addresses); the notebook API proxy is deployed and takes over once the chart points the hub at it; removal of every hub credential: [notebooks-without-kubernetes-credentials.md](notebooks-without-kubernetes-credentials.md) |
 | Git runs a workload as the operator SA (`mip-argo-project-common` targets `mip-notebooks-system`) | 2 | ⚠ accepted, same trust model as the other out-of-band SAs; the repository is the trust root |
 | `default` AppProject misuse | 2 | ✅ deny-all |
 

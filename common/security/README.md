@@ -111,7 +111,7 @@ hub talks through the proxy. The policy keeps its name in both states so Argo CD
 place. The `mip-notebooks-system` block admits the hub pods of federation namespaces to the
 proxy, lets the proxy reach the API server, and gives that namespace no external HTTP or HTTPS
 egress at all (`networkPolicy.noExternalEgress`). The switch and the step after it are described
-in [`how-to-implement-the-notebook-properly.md`](../../how-to-implement-the-notebook-properly.md).
+in [`docs/notebooks-without-kubernetes-credentials.md`](../../docs/notebooks-without-kubernetes-credentials.md).
 
 Federation access control for those namespaces is configured via `common-templates/values.yaml`:
 

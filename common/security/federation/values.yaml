@@ -35,6 +35,6 @@ apiServer:
   # The JupyterHub pod may always reach the notebook API proxy in mip-notebooks-system on 8443
   # (common/notebook-operator). hubDirect additionally allows the direct path to apiServer.cidrs
   # on 6443; set it to false once every hub talks through the proxy (madgik/mip chart value
-  # jupyterhub.apiProxy, how-to-implement-the-notebook-properly.md). The policy name stays
+  # jupyterhub.apiProxy, docs/notebooks-without-kubernetes-credentials.md). The policy name stays
   # allow-jupyterhub-to-kube-api in both states so Argo CD updates it in place.
   hubDirect: true

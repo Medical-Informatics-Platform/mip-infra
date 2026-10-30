@@ -80,7 +80,7 @@ argocd app delete "${SAFE_BRANCH_NAME}-argo-projects"    --yes
 The proxy (`common/notebook-operator/manifests/api-proxy.yaml`) is deployed and verified
 before any hub uses it; the hub side needs the `madgik/mip` chart value
 `jupyterhub.apiProxy` (see
-[how-to-implement-the-notebook-properly.md](../how-to-implement-the-notebook-properly.md)).
+[notebooks-without-kubernetes-credentials.md](notebooks-without-kubernetes-credentials.md)).
 
 1. Check the proxy: `kubectl -n mip-notebooks-system get deploy notebook-api-proxy certificate notebook-api-proxy`
    and `kubectl -n federation-<x> get configmap notebook-api-proxy-ca`.

@@ -4,7 +4,7 @@
 # forwards the hub's own token; RBAC and the admission policies of the API server stay the
 # authorizers. Serving certificate and CA: api-proxy-certificates.yaml. Network policies:
 # common/security (the hubs may always reach it; apiServer.hubDirect: false closes the direct
-# path). Design and the next step: how-to-implement-the-notebook-properly.md.
+# path). Design and the next step: docs/notebooks-without-kubernetes-credentials.md.
 apiVersion: apps/v1
 kind: Deployment
 metadata:
