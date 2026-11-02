@@ -15,7 +15,7 @@ spec:
         valueFiles: [values.yaml, $values/common/datacatalog/values.yaml]
         parameters:
           - name: images.tag
-            value: "2.0.1"
+            value: 2.0.1
     - repoURL: https://github.com/Medical-Informatics-Platform/mip-infra.git
       targetRevision: main
       ref: values
