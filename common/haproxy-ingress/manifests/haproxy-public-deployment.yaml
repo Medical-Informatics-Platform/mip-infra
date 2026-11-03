@@ -27,7 +27,7 @@ spec:
       serviceAccountName: haproxy-public
       containers:
         - name: controller
-          image: haproxytech/kubernetes-ingress:3.2.16
+          image: haproxytech/kubernetes-ingress:3.2.19
           imagePullPolicy: IfNotPresent
           args:
             - --configmap=ingress-nginx/haproxy
