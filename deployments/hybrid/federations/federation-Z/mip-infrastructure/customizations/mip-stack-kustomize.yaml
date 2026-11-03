@@ -23,7 +23,7 @@ spec:
     namespace: federation-z
   sources:
     - repoURL: https://github.com/Medical-Informatics-Platform/mip
-      targetRevision: 21da27f975864a7fe33e9a61c8ad816115a815bd  # 9.1.0
+      targetRevision: b071e80c0e4671b02b5884e7f352dadc4ff2b78b  # 9.2.1
       path: deployment/kubernetes
       helm:
         valueFiles:
