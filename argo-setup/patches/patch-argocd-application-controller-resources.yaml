@@ -1,4 +1,6 @@
 ---
+# Sized from measured use (argo-setup/README.md, "Resource sizing"):
+# memory peak 973Mi, CPU p90 48m.
 apiVersion: apps/v1
 kind: StatefulSet
 metadata:
@@ -11,8 +13,8 @@ spec:
         - name: argocd-application-controller
           resources:
             requests:
-              cpu: 500m
-              memory: 1Gi
+              cpu: 63m
+              memory: 1280Mi
             limits:
               cpu: '2'
-              memory: 2Gi
+              memory: 1280Mi

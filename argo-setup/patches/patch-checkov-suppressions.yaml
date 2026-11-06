@@ -1,16 +1,13 @@
 ---
-# Documented Checkov suppressions for the upstream Argo CD workloads.
-# Neither is fixable on mip-infra side.
+# Checkov findings on the upstream Argo CD resources that cannot be fixed in
+# this overlay. Each annotation gives the reason.
 #
-# CKV_K8S_38: the rule wants automountServiceAccountToken false. These
-# components call the Kubernetes API and the token is how they authenticate,
-# so turning it off breaks them. Upstream already sets false on repo-server
-# and redis-ha-server, the two that never call the API.
+# CKV_K8S_38 (automountServiceAccountToken): these components authenticate to
+# the Kubernetes API with the mounted token. Upstream already disables it on
+# repo-server and redis-ha-server, which do not call the API.
 #
-# CKV_K8S_35: the Redis cache password, from secret argocd-redis key auth,
-# injected as REDIS_PASSWORD or AUTH. The rule wants it mounted as a file,
-# but Argo CD and the redis-ha containers only read it from the environment
-# and offer no file option. That is upstream's design to change,
+# CKV_K8S_35 (secrets as files): Argo CD and redis-ha read the Redis password
+# (secret argocd-redis, key auth) only from the REDIS_PASSWORD or AUTH env var.
 apiVersion: apps/v1
 kind: StatefulSet
 metadata:
@@ -28,10 +25,6 @@ metadata:
   annotations:
     checkov.io/skip1: CKV_K8S_35=Redis password is read from the AUTH env var; upstream
       provides no file-based alternative
-    checkov.io/skip2: CKV_K8S_8=redis and sentinel both have liveness probes, the
-      split-brain-fix sidecar is a shell loop with nothing to probe
-    checkov.io/skip3: CKV_K8S_9=redis and sentinel both have readiness probes, the
-      split-brain-fix sidecar is a shell loop with nothing to probe
 ---
 apiVersion: apps/v1
 kind: Deployment
@@ -86,26 +79,23 @@ metadata:
   annotations:
     checkov.io/skip1: CKV_K8S_38=Component calls the Kubernetes API and needs the
       mounted token to authenticate
-    checkov.io/skip2: CKV_K8S_8=argocd rundex only starts the dex process when an
-      SSO connector is set in argocd-cm. This install sets none, so nothing listens
-      on 5558 and any probe there fails forever. Add the probe when SSO is configured
-    checkov.io/skip3: CKV_K8S_9=Same as CKV_K8S_8, with no dex process there is no
-      readiness endpoint to probe
+    checkov.io/skip2: CKV_K8S_8=dex only starts when an SSO connector is set in argocd-cm.
+      None is set, so nothing listens on 5558. Add probes when configuring SSO
+    checkov.io/skip3: CKV_K8S_9=Same reason as CKV_K8S_8
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
 metadata:
   name: argocd-application-controller
   annotations:
-    checkov.io/skip1: CKV_K8S_49=The wildcard rule is read-only get/list/watch, the
-      controller must read any resource kind to compute health and sync status
+    checkov.io/skip1: CKV_K8S_49=The wildcard rule is read-only (get/list/watch); the
+      controller reads every resource kind to compute health and sync status
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding
 metadata:
   name: argocd-dex-server
   annotations:
-    checkov.io/skip1: CKV2_K8S_5=dex starts a configmap/secret informer, which needs
-      list and watch. Kubernetes RBAC cannot scope list or watch to named resources,
-      so resourceNames does not apply and the grant cannot be narrowed. The Role is
-      namespace scoped and bound only to the dex ServiceAccount
+    checkov.io/skip1: CKV2_K8S_5=dex watches configmaps and secrets, which needs list
+      and watch, and RBAC cannot limit those to named resources. The Role is
+      namespaced and bound only to the dex ServiceAccount

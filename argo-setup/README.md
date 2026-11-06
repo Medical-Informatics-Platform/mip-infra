@@ -63,7 +63,8 @@ LC_ALL=C find . -type f -not -path '*/.git/*' \
 LC_ALL=C find . -type f -not -path '*/.git/*' \
   -exec sed -i "s/argocd.example.com/${ARGOCD_HOST}/g" {} +
 
-# 2. Namespace
+# 2. Namespace. The overlay labels it to enforce Pod Security "restricted"
+#    (patches/namespace.yaml).
 kubectl create namespace "$ARGOCD_NS"
 
 # 3. Apply the overlay (upstream HA base + our patches in one shot).
@@ -88,24 +89,40 @@ kubectl -n "$ARGOCD_NS" delete secret argocd-initial-admin-secret --ignore-not-f
 
 ## Resource sizing
 
-The baked-in requests/limits roughly double the upstream baseline to give safe headroom for a small but growing team. Adjust down if cluster-constrained, up as you add apps. Monitor with `kubectl top pods` or Prometheus.
+Upstream sets no resource values. These are sized from the dev cluster's usage (November 2026, about 3 weeks of uptime), measured with [`scripts/measure-argocd-usage.sh`](../scripts/measure-argocd-usage.sh):
 
-| Component                     | Replicas | CPU Request | CPU Limit | Mem Request | Mem Limit |
-| ----------------------------- | -------- | ----------- | --------- | ----------- | --------- |
-| argocd-application-controller | 2        | 500m        | 2         | 1Gi         | 2Gi       |
-| argocd-repo-server            | 2        | 500m        | 2         | 1Gi         | 2Gi       |
-| argocd-server (API/UI)        | 2        | 200m        | 1         | 512Mi       | 1Gi       |
-| argocd-dex-server             | 2        | 100m        | 400m      | 256Mi       | 512Mi     |
-| argocd-redis-ha (per pod)     | 3        | 200m        | 1         | 512Mi       | 1Gi       |
+- Memory: request = limit = peak + 30%, rounded up to a multiple of 32Mi. The peak is the container's cgroup `memory.peak` (`--peaks`), which includes helm and kustomize renders. Equal request and limit follows GKE's [best practices](https://cloud.google.com/architecture/best-practices-for-running-cost-effective-kubernetes-applications-on-gke).
+- CPU request: 90th percentile of one hour of `kubectl top` samples, + 30%.
+- Minimum per pod: 25m CPU and 250Mi memory (the VPA recommender's minimums), split across its containers.
+- CPU limit: well above the measured use, so `--peaks` shows little or no throttling. Checkov (CKV_K8S_11) requires one.
+- Init containers exit too quickly to measure; their values are estimates.
+
+| Component                       | Replicas | CPU Request | CPU Limit | Memory (request = limit) | Memory peak   |
+| ------------------------------- | -------- | ----------- | --------- | ------------------------ | ------------- |
+| argocd-application-controller   | 2        | 63m         | 2         | 1280Mi                   | 973Mi         |
+| argocd-repo-server              | 2        | 25m         | 2         | 416Mi                    | 303Mi         |
+| argocd-server (API/UI)          | 2        | 25m         | 1         | 256Mi                    | 55Mi          |
+| argocd-applicationset-controller| 1        | 25m         | 500m      | 256Mi                    | 58Mi          |
+| argocd-notifications-controller | 1        | 25m         | 500m      | 256Mi                    | 41Mi          |
+| argocd-dex-server               | 2        | 25m         | 400m      | 256Mi                    | 24Mi          |
+| argocd-redis-ha-haproxy         | 3        | 25m         | 500m      | 256Mi                    | 27Mi          |
+| argocd-redis-ha-server: redis   | 3        | 15m         | 1         | 96Mi                     | 22Mi          |
+| sentinel                        |          | 16m         | 200m      | 96Mi                     | 14Mi          |
+| split-brain-fix                 |          | 9m          | 200m      | 96Mi                     | 5Mi           |
+
+Re-measure after an Argo CD upgrade or after adding federations, since application-controller and repo-server grow with the number of Applications: `bash scripts/measure-argocd-usage.sh --peaks`. An `OOMKilled` in its output means a memory limit is too low.
 
 ## What the overlay changes
 
 The canonical list of patches lives in [`patches/kustomization.yaml`](patches/kustomization.yaml) — it uses the modern `patches:` field (not the deprecated `patchesStrategicMerge`). The overlay's job is to adjust **only what we need** on top of the upstream HA manifest:
 
 - Resource requests/limits (table above) and HA replica counts.
+- Liveness and readiness probes where upstream has none.
+- Images pinned by digest (see [Bumping Argo CD](#bumping-argo-cd)).
 - Traefik `Ingress` + `--insecure` on `argocd-server` (TLS terminated at ingress).
 - PodDisruptionBudgets for every workload.
-- `seccompProfile: RuntimeDefault` on every pod (PSS-restricted).
+- Pod Security "restricted" enforced on the namespace: every pod runs non-root as UID/GID 10000 with `seccompProfile: RuntimeDefault`. repo-server keeps the image's UID 999, the only user OpenSSH accepts for `git fetch`.
+- Checkov findings that cannot be fixed here are suppressed, each with its reason, in [`patches/patch-checkov-suppressions.yaml`](patches/patch-checkov-suppressions.yaml).
 - ClusterRole tightening (full-replace of upstream rules — see the note in `kustomization.yaml`).
 - ClusterRoleBinding namespace rewrites.
 - `argocd-cm` / `argocd-rbac-cm` / `argocd-cmd-params-cm` config (below).
@@ -155,9 +172,9 @@ argocd version
    ```bash
    bash scripts/check-upstream-argo-clusterroles.sh --update
    ```
-4. Refresh the image digest pins in the `images:` block of `patches/kustomization.yaml`. For each image, take the tag the new upstream manifest uses (`curl -sL <install.yaml URL> | grep 'image:' | sort -u`), then resolve that tag's multi-arch digest, e.g. `docker buildx imagetools inspect quay.io/argoproj/argocd:<TAG>`. Update the tag comment too. A stale pin keeps the old binaries running under the new manifests.
+4. Update the `images:` block of `patches/kustomization.yaml`. kustomize replaces every matching image with the pinned digest, so an old digest would run the old binaries under the new manifests. For each image the new manifest uses (`curl -sL <install.yaml URL> | grep 'image:' | sort -u`), set the tag comment and the tag's multi-arch digest (`docker buildx imagetools inspect quay.io/argoproj/argocd:<TAG>`). Check with `bash scripts/check-argo-image-pins.sh`.
 5. Re-render the overlay locally: `kubectl kustomize patches >/dev/null`.
-6. Open a PR; CI runs the kustomize render and the drift check.
+6. Open a PR; CI runs the kustomize render, the drift check and the image pin check.
 7. After merge, re-apply against the live cluster — `argo-setup/` is bootstrapped out-of-band, not self-managed by Argo CD:
    ```bash
    kustomize build argo-setup/patches \

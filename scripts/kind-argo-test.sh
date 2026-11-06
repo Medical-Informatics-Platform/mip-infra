@@ -145,9 +145,13 @@ kubectl -n "$NETPOL_TEST_NS" run probe \
   --image="$PROBE_IMAGE" \
   --restart=Never --command -- sleep 600 >/dev/null
 kubectl -n "$NETPOL_TEST_NS" wait pod/probe --for=condition=Ready --timeout=120s
+# $NS enforces Pod Security "restricted", so the probe needs a compliant
+# securityContext, with a numeric UID since the curl image's user is a name.
 kubectl -n "$NS" run "$ALLOWLISTED_PROBE" \
   --labels='app.kubernetes.io/name=argocd-server' \
   --image="$PROBE_IMAGE" \
+  --override-type=strategic \
+  --overrides='{"spec": {"securityContext": {"runAsNonRoot": true, "runAsUser": 10000, "runAsGroup": 10000, "seccompProfile": {"type": "RuntimeDefault"}}, "containers": [{"name": "'"$ALLOWLISTED_PROBE"'", "securityContext": {"allowPrivilegeEscalation": false, "capabilities": {"drop": ["ALL"]}}}]}}' \
   --restart=Never --command -- sleep 600 >/dev/null
 kubectl -n "$NS" wait pod/"$ALLOWLISTED_PROBE" --for=condition=Ready --timeout=120s
 

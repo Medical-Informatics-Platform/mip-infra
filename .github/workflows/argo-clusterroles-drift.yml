@@ -10,10 +10,11 @@ on:
       - argo-setup/patches/patch-argocd-applicationset-controller-clusterrole.yaml
       - argo-setup/upstream-snapshot/**
       - scripts/check-upstream-argo-clusterroles.sh
+      - scripts/check-argo-image-pins.sh
       - .github/workflows/argo-clusterroles-drift.yml
   schedule:
-    # Weekly run catches upstream releases that bump the rules even when no
-    # PR touches argo-setup/.
+    # Weekly run catches upstream changes even when no PR touches argo-setup/:
+    # new ClusterRole rules, or a pinned image tag re-pushed with a new digest.
     - cron: '23 4 * * 1'
 permissions:
   contents: read
@@ -37,3 +38,8 @@ jobs:
           rm -f "$tarball" yq_linux_amd64
       - name: Compare upstream Argo CD ClusterRoles vs reviewed snapshot
         run: bash scripts/check-upstream-argo-clusterroles.sh
+      # Renovate bumps the manifest tag but not the image digests, so this
+      # fails until the digests match the new tag.
+      - name: Check image digest pins against the upstream manifest
+        if: ${{ !cancelled() }}
+        run: bash scripts/check-argo-image-pins.sh

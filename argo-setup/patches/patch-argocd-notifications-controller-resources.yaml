@@ -1,4 +1,6 @@
 ---
+# Sized from measured use (argo-setup/README.md, "Resource sizing"):
+# memory peak 41Mi, CPU p90 2m.
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -10,8 +12,8 @@ spec:
         - name: argocd-notifications-controller
           resources:
             requests:
-              cpu: 100m
-              memory: 128Mi
+              cpu: 25m
+              memory: 256Mi
             limits:
               cpu: 500m
-              memory: 512Mi
+              memory: 256Mi

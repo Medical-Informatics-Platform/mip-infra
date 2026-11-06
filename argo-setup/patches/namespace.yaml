@@ -1,0 +1,15 @@
+---
+# Pod Security Admission "restricted": the API server rejects pods in this
+# namespace unless they run non-root, without privilege escalation, with all
+# capabilities dropped, the RuntimeDefault seccomp profile and safe volume
+# types. "latest" follows the cluster's Kubernetes version.
+# https://kubernetes.io/docs/concepts/security/pod-security-admission/
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: argocd-mip-team
+  labels:
+    pod-security.kubernetes.io/enforce: restricted
+    pod-security.kubernetes.io/enforce-version: latest
+    pod-security.kubernetes.io/audit: restricted
+    pod-security.kubernetes.io/warn: restricted
