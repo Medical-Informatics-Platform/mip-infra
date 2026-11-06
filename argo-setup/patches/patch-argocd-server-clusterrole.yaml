@@ -45,6 +45,11 @@ rules:
       - delete
       - patch
   # Batch jobs - ArgoCD needs to create and delete jobs
+  # Upstream also grants update on '*/finalizers' in every API group. Only
+  # "create Job from CronJob" needs it, and only on clusters running the
+  # OwnerReferencesPermissionEnforcement admission plugin, which ours do not.
+  # If that action fails with "cannot set blockOwnerDeletion", add update on
+  # batch cronjobs/finalizers only.
   - apiGroups: [batch]
     resources: [jobs]
     verbs:

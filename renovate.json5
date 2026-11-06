@@ -160,6 +160,10 @@
     },
     // Submariner broker + operator charts and the remote-node subctl pin in one PR.
     { matchManagers: ['kustomize'], groupName: 'submariner' },
+    // Argo CD image digests must match the tags the upstream manifest uses,
+    // and the entries have no newTag, so Renovate would track `latest`.
+    // Updated by hand on each Argo CD bump (argo-setup/README.md).
+    { matchManagers: ['kustomize'], matchFileNames: ['argo-setup/**'], enabled: false },
     { matchDepNames: ['submariner-io/releases'], groupName: 'submariner' },
     // Federation overrides: keep their PRs separate from the shared-apps baselines.
     {

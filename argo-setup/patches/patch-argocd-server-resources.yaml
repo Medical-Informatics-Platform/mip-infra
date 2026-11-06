@@ -1,4 +1,6 @@
 ---
+# Sized from measured use (argo-setup/README.md, "Resource sizing"):
+# memory peak 55Mi, CPU p90 2m.
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -11,8 +13,8 @@ spec:
         - name: argocd-server
           resources:
             requests:
-              cpu: 200m
-              memory: 512Mi
+              cpu: 25m
+              memory: 256Mi
             limits:
               cpu: '1'
-              memory: 1Gi
+              memory: 256Mi

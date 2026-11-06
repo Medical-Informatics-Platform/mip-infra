@@ -1,4 +1,11 @@
 ---
+# Sized from measured use (argo-setup/README.md, "Resource sizing"):
+# memory peak redis 22Mi, sentinel 14Mi, split-brain-fix 5Mi; CPU p90
+# 11m, 12m and 1m. config-init values are estimates.
+# Redis runs with maxmemory 0 (upstream): a cache over the memory limit gets
+# the pod OOM-killed rather than evicting keys.
+# split-brain-fix runs redis-cli every 60 s and gets the same 200m CPU limit
+# as sentinel; 50m throttles it in most periods.
 apiVersion: apps/v1
 kind: StatefulSet
 metadata:
@@ -6,12 +13,37 @@ metadata:
 spec:
   template:
     spec:
+      initContainers:
+        - name: config-init
+          resources:
+            requests:
+              cpu: 50m
+              memory: 128Mi
+            limits:
+              cpu: 100m
+              memory: 128Mi
       containers:
         - name: redis
           resources:
             requests:
-              cpu: 200m
-              memory: 512Mi
+              cpu: 15m
+              memory: 96Mi
             limits:
               cpu: '1'
-              memory: 1Gi
+              memory: 96Mi
+        - name: sentinel
+          resources:
+            requests:
+              cpu: 16m
+              memory: 96Mi
+            limits:
+              cpu: 200m
+              memory: 96Mi
+        - name: split-brain-fix
+          resources:
+            requests:
+              cpu: 9m
+              memory: 96Mi
+            limits:
+              cpu: 200m
+              memory: 96Mi

@@ -1,0 +1,37 @@
+---
+# Sized from measured use (argo-setup/README.md, "Resource sizing"):
+# haproxy memory peak 27Mi, CPU p90 3m. Init container values are
+# estimates.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: argocd-redis-ha-haproxy
+spec:
+  template:
+    spec:
+      initContainers:
+        - name: secret-init
+          resources:
+            requests:
+              cpu: 10m
+              memory: 64Mi
+            limits:
+              cpu: 50m
+              memory: 64Mi
+        - name: config-init
+          resources:
+            requests:
+              cpu: 10m
+              memory: 64Mi
+            limits:
+              cpu: 50m
+              memory: 64Mi
+      containers:
+        - name: haproxy
+          resources:
+            requests:
+              cpu: 25m
+              memory: 256Mi
+            limits:
+              cpu: 500m
+              memory: 256Mi

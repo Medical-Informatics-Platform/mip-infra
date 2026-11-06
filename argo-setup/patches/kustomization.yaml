@@ -5,7 +5,8 @@ namespace: argocd-mip-team
 # Base: upstream HA manifest (resolved tag).
 # Bump policy: pin to a specific tag, manage upgrades via Renovate / manual PR.
 resources:
-  - https://raw.githubusercontent.com/argoproj/argo-cd/v3.5.7/manifests/ha/install.yaml
+  - https://raw.githubusercontent.com/argoproj/argo-cd/v3.6.1/manifests/ha/install.yaml
+  - namespace.yaml
   - poddisruptionbudgets.yaml
   - argocd-server-ingress.yaml
 # Strategic-merge / JSON patches on top of the upstream base.
@@ -26,7 +27,13 @@ patches:
   - path: patch-argocd-repo-server-resources.yaml
   - path: patch-argocd-server-resources.yaml
   - path: patch-argocd-dex-server-resources.yaml
+  - path: patch-argocd-applicationset-controller-resources.yaml
+  - path: patch-argocd-notifications-controller-resources.yaml
+  - path: patch-argocd-redis-ha-haproxy-resources.yaml
   - path: patch-argocd-redis-ha-statefulset.yaml
+  - path: patch-argocd-probes.yaml
+  # Checkov suppressions
+  - path: patch-checkov-suppressions.yaml
   # Argo CD config
   - path: patch-argocd-cmd-params-cm.yaml
   - path: patch-argocd-cm.yaml
@@ -41,11 +48,12 @@ patches:
   - path: patch-argocd-application-controller-clusterrolebinding.yaml
   - path: patch-argocd-server-clusterrolebinding.yaml
   - path: patch-argocd-applicationset-controller-clusterrolebinding.yaml
-  # seccompProfile: RuntimeDefault on every Argo CD workload (PSS-restricted).
-  # Two-shape patch: redis-ha-{server,haproxy} already set fsGroup/runAsUser
-  # in pod securityContext, so we only add the seccompProfile child key.
-  # The other workloads have no pod-level securityContext upstream, so we set
-  # the whole map.
+  # Pod securityContext on every Argo CD workload: seccompProfile
+  # RuntimeDefault and UID/GID 10000. runAsGroup is needed because a UID with
+  # no passwd entry otherwise gets GID 0, which can write to /home/argocd and
+  # /tmp in the argocd image.
+  # redis-ha-{server,haproxy} already have a pod securityContext upstream, so
+  # only its keys are set; the other workloads get the whole map.
   - target:
       kind: (Deployment|StatefulSet)
       name: argocd-redis-ha-.*
@@ -53,10 +61,51 @@ patches:
       - op: add
         path: /spec/template/spec/securityContext/seccompProfile
         value: {type: RuntimeDefault}
+      - op: replace
+        path: /spec/template/spec/securityContext/runAsUser
+        value: 10000
+      - op: add
+        path: /spec/template/spec/securityContext/runAsGroup
+        value: 10000
   - target:
       kind: (Deployment|StatefulSet)
-      name: argocd-(application-controller|server|repo-server|dex-server|applicationset-controller)
+      name: argocd-(application-controller|server|dex-server|applicationset-controller|notifications-controller)
     patch: |-
       - op: add
         path: /spec/template/spec/securityContext
-        value: {seccompProfile: {type: RuntimeDefault}}
+        value: {seccompProfile: {type: RuntimeDefault}, runAsUser: 10000, runAsGroup: 10000, runAsNonRoot: true}
+  # Upstream sets runAsUser 1001 on the dex container, which overrides the
+  # pod-level UID. Set it to 10000 like the other pods.
+  - patch: |-
+      apiVersion: apps/v1
+      kind: Deployment
+      metadata:
+        name: argocd-dex-server
+      spec:
+        template:
+          spec:
+            containers:
+              - name: dex
+                securityContext:
+                  runAsUser: 10000
+  # repo-server keeps the image's UID 999, the only user in its /etc/passwd.
+  # It fetches our git@github.com repos over SSH, and the OpenSSH client
+  # refuses to run as a UID without a passwd entry.
+  - target:
+      kind: Deployment
+      name: argocd-repo-server
+    patch: |-
+      - op: add
+        path: /spec/template/spec/securityContext
+        value: {seccompProfile: {type: RuntimeDefault}, runAsNonRoot: true}
+# Images pinned by digest; the comment gives the tag. Update them on every
+# bump of the upstream tag in `resources:` (README, "Bumping Argo CD").
+images:
+  - name: quay.io/argoproj/argocd  # v3.6.1
+    digest: sha256:296e3d74f449b2ce45265613fcb68c18ed7366488360c8ea32f5f2a93d2e5c54
+  - name: ghcr.io/dexidp/dex  # v2.46.0
+    digest: sha256:933fcd3f523338c847b88ef84a7145fb2fcb7b9917f08418612afeaaa2001777
+  - name: public.ecr.aws/docker/library/haproxy  # 3.0.8-alpine
+    digest: sha256:e11f034e651603f10a365e5ad5a0321825e18eded9620e40c4f4d6ae58419bfe
+  - name: public.ecr.aws/docker/library/redis  # 8.10.1-alpine
+    digest: sha256:ef216d85ec44f4fdf7c0e6df2d1757a4734ed32fbb278cabd3181b5a27353b79

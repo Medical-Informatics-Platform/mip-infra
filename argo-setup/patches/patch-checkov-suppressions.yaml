@@ -1,0 +1,101 @@
+---
+# Checkov findings on the upstream Argo CD resources that cannot be fixed in
+# this overlay. Each annotation gives the reason.
+#
+# CKV_K8S_38 (automountServiceAccountToken): these components authenticate to
+# the Kubernetes API with the mounted token. Upstream already disables it on
+# repo-server and redis-ha-server, which do not call the API.
+#
+# CKV_K8S_35 (secrets as files): Argo CD and redis-ha read the Redis password
+# (secret argocd-redis, key auth) only from the REDIS_PASSWORD or AUTH env var.
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: argocd-application-controller
+  annotations:
+    checkov.io/skip1: CKV_K8S_38=Component calls the Kubernetes API and needs the
+      mounted token to authenticate
+    checkov.io/skip2: CKV_K8S_35=Redis password is read from the REDIS_PASSWORD env
+      var; upstream provides no file-based alternative
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: argocd-redis-ha-server
+  annotations:
+    checkov.io/skip1: CKV_K8S_35=Redis password is read from the AUTH env var; upstream
+      provides no file-based alternative
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: argocd-server
+  annotations:
+    checkov.io/skip1: CKV_K8S_38=Component calls the Kubernetes API and needs the
+      mounted token to authenticate
+    checkov.io/skip2: CKV_K8S_35=Redis password is read from the REDIS_PASSWORD env
+      var; upstream provides no file-based alternative
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: argocd-repo-server
+  annotations:
+    checkov.io/skip1: CKV_K8S_35=Redis password is read from the REDIS_PASSWORD env
+      var; upstream provides no file-based alternative
+    checkov.io/skip2: CKV_K8S_40=Runs as the image UID 999, the only passwd entry;
+      the OpenSSH client used for git fetch refuses UIDs without one
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: argocd-redis-ha-haproxy
+  annotations:
+    checkov.io/skip1: CKV_K8S_38=Component calls the Kubernetes API and needs the
+      mounted token to authenticate
+    checkov.io/skip2: CKV_K8S_35=Redis password is read from the AUTH env var; upstream
+      provides no file-based alternative
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: argocd-applicationset-controller
+  annotations:
+    checkov.io/skip1: CKV_K8S_38=Component calls the Kubernetes API and needs the
+      mounted token to authenticate
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: argocd-notifications-controller
+  annotations:
+    checkov.io/skip1: CKV_K8S_38=Component calls the Kubernetes API and needs the
+      mounted token to authenticate
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: argocd-dex-server
+  annotations:
+    checkov.io/skip1: CKV_K8S_38=Component calls the Kubernetes API and needs the
+      mounted token to authenticate
+    checkov.io/skip2: CKV_K8S_8=dex only starts when an SSO connector is set in argocd-cm.
+      None is set, so nothing listens on 5558. Add probes when configuring SSO
+    checkov.io/skip3: CKV_K8S_9=Same reason as CKV_K8S_8
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: argocd-application-controller
+  annotations:
+    checkov.io/skip1: CKV_K8S_49=The wildcard rule is read-only (get/list/watch);
+      the controller reads every resource kind to compute health and sync status
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: argocd-dex-server
+  annotations:
+    checkov.io/skip1: CKV2_K8S_5=dex watches configmaps and secrets, which needs list
+      and watch, and RBAC cannot limit those to named resources. The Role is namespaced
+      and bound only to the dex ServiceAccount

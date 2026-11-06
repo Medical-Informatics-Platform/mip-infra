@@ -1,4 +1,6 @@
 ---
+# Sized from measured use (argo-setup/README.md, "Resource sizing"):
+# memory peak 303Mi (helm and kustomize renders included), CPU p90 5m.
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -7,12 +9,22 @@ spec:
   replicas: 2
   template:
     spec:
+      initContainers:
+        # Copies the argocd binary; 64Mi is too small for that.
+        - name: copyutil
+          resources:
+            requests:
+              cpu: 10m
+              memory: 256Mi
+            limits:
+              cpu: 50m
+              memory: 256Mi
       containers:
         - name: argocd-repo-server
           resources:
             requests:
-              cpu: 500m
-              memory: 1Gi
+              cpu: 25m
+              memory: 416Mi
             limits:
               cpu: '2'
-              memory: 2Gi
+              memory: 416Mi

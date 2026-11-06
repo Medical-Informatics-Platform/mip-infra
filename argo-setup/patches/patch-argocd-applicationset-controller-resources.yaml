@@ -1,0 +1,19 @@
+---
+# Sized from measured use (argo-setup/README.md, "Resource sizing"):
+# memory peak 58Mi, CPU p90 4m.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: argocd-applicationset-controller
+spec:
+  template:
+    spec:
+      containers:
+        - name: argocd-applicationset-controller
+          resources:
+            requests:
+              cpu: 25m
+              memory: 256Mi
+            limits:
+              cpu: 500m
+              memory: 256Mi

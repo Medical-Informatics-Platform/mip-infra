@@ -1,4 +1,6 @@
 ---
+# Sized from measured use (argo-setup/README.md, "Resource sizing"):
+# memory peak 24Mi, CPU p90 1m.
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -7,12 +9,22 @@ spec:
   replicas: 2
   template:
     spec:
+      initContainers:
+        # Copies the argocd binary; 64Mi is too small for that.
+        - name: copyutil
+          resources:
+            requests:
+              cpu: 10m
+              memory: 256Mi
+            limits:
+              cpu: 50m
+              memory: 256Mi
       containers:
         - name: dex
           resources:
             requests:
-              cpu: 100m
+              cpu: 25m
               memory: 256Mi
             limits:
               cpu: 400m
-              memory: 512Mi
+              memory: 256Mi
