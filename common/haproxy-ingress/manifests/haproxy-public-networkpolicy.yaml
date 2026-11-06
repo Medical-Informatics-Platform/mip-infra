@@ -1,0 +1,24 @@
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: haproxy-public-controller
+  namespace: ingress-nginx
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: haproxy-public
+      app.kubernetes.io/component: controller
+  policyTypes: [Ingress, Egress]
+  ingress:
+    # public HTTP and HTTPS through the MetalLB VIP, from anywhere
+    - ports:
+        - {port: 8080, protocol: TCP}
+        - {port: 8443, protocol: TCP}
+  egress:
+    # Ingress backends, in any namespace
+    - to:
+        - namespaceSelector: {}
+    # Kubernetes API server
+    - ports:
+        - {port: 6443, protocol: TCP}

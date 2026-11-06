@@ -5,6 +5,7 @@ resources:
   - haproxy-public-ingressclass.yaml
   - haproxy-public-service.yaml
   - haproxy-public-deployment.yaml
+  - haproxy-public-networkpolicy.yaml
   - clusterissuer-letsencrypt-public.yaml
   - haproxy-public-default-certificate.yaml
   - haproxy-configmap.yaml
