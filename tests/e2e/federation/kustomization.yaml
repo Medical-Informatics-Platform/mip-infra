@@ -8,6 +8,9 @@
 #     documentation example that does not match the real chart)
 #   - append CI value files that shim CephFS RWX storage, the public
 #     ingress host and Keycloak (see the sibling *-ci-values.yaml)
+#   - drop the notebook-examples source of mip-stack: its
+#     ReadWriteMany claim cannot bind on local-path, and only notebooks,
+#     disabled in mip-stack-ci-values.yaml, mount it
 apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
 resources: [../../../deployments/local/federations/federation-A]
@@ -33,3 +36,8 @@ patches:
       - op: add
         path: /spec/sources/0/helm/valueFiles/-
         value: $values/tests/e2e/federation/mip-stack-ci-values.yaml
+      - op: test
+        path: /spec/sources/2/path
+        value: deployments/shared-apps/mip-stack/notebook-examples
+      - op: remove
+        path: /spec/sources/2

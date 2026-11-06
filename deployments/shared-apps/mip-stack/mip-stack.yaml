@@ -12,7 +12,7 @@ metadata:
 spec:
   sources:
     - repoURL: https://github.com/Medical-Informatics-Platform/mip
-      targetRevision: 2e9740d9bd5ec8cb0970edf0cb6f471aad89bdfb  # 9.2.0
+      targetRevision: b071e80c0e4671b02b5884e7f352dadc4ff2b78b  # 9.2.1
       path: deployment/kubernetes
       helm:
         valueFiles:
@@ -21,6 +21,11 @@ spec:
     - repoURL: https://github.com/Medical-Informatics-Platform/mip-infra.git
       targetRevision: main
       ref: values
+    # Shared read-only notebook examples, one copy per federation (notebook-examples/ next to this
+    # file): a chart, so Argo CD renders it into the destination namespace (.Release.Namespace).
+    - repoURL: https://github.com/Medical-Informatics-Platform/mip-infra.git
+      targetRevision: main
+      path: deployments/shared-apps/mip-stack/notebook-examples
   destination:
     server: https://kubernetes.default.svc
     # This will be overridden by the federation-specific kustomize patch

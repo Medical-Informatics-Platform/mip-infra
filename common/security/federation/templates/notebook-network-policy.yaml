@@ -1,0 +1,75 @@
+---
+# Network rules of the notebook pods (component: singleuser-server, set by the notebook
+# operator). Notebooks run user code and the shared examples, and can fetch the user's
+# platform token from the hub, so they get no internet. federation-namespace-isolation leaves
+# them out because it opens 80/443 to everywhere and a NetworkPolicy can only add access. The
+# two policies below are all a notebook can use: its own namespace (hub API, platform-backend)
+# with DNS, and the shared Jupyter AI proxy. %pip install and other downloads fail.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-notebook-within-namespace
+  namespace: {{.Values.targetNamespace}}
+  labels:
+    app.kubernetes.io/name: federation-network-policy
+    app.kubernetes.io/instance: {{.Release.Name}}
+    app.kubernetes.io/managed-by: {{.Release.Service}}
+    mip.namespace-type: federation
+    mip.federation-type: {{.Values.federationType}}
+spec:
+  podSelector:
+    matchLabels:
+      component: singleuser-server
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    # The hub proxies each user to their notebook.
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: {{.Values.targetNamespace}}
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: {{.Values.targetNamespace}}
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: {{.Values.systemNamespace}}
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+---
+# Notebook pods reach the shared Jupyter AI proxy (common/athena-proxy); only
+# the proxy reaches the inference server. Name kept so Argo updates in place.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-notebook-to-codex-llm
+  namespace: {{.Values.targetNamespace}}
+  labels:
+    app.kubernetes.io/name: federation-network-policy
+    app.kubernetes.io/instance: {{.Release.Name}}
+    app.kubernetes.io/managed-by: {{.Release.Service}}
+    mip.namespace-type: federation
+    mip.federation-type: {{.Values.federationType}}
+spec:
+  podSelector:
+    matchLabels:
+      component: singleuser-server
+  policyTypes: ["Egress"]
+  egress:
+  - to:
+    - namespaceSelector:
+        matchLabels:
+          kubernetes.io/metadata.name: mip-athena
+      podSelector:
+        matchLabels:
+          app: athena-proxy
+    ports:
+    - protocol: TCP
+      port: 8080
