@@ -88,8 +88,8 @@ kind: ClusterRole
 metadata:
   name: argocd-application-controller
   annotations:
-    checkov.io/skip1: CKV_K8S_49=The wildcard rule is read-only (get/list/watch); the
-      controller reads every resource kind to compute health and sync status
+    checkov.io/skip1: CKV_K8S_49=The wildcard rule is read-only (get/list/watch);
+      the controller reads every resource kind to compute health and sync status
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding
@@ -97,5 +97,5 @@ metadata:
   name: argocd-dex-server
   annotations:
     checkov.io/skip1: CKV2_K8S_5=dex watches configmaps and secrets, which needs list
-      and watch, and RBAC cannot limit those to named resources. The Role is
-      namespaced and bound only to the dex ServiceAccount
+      and watch, and RBAC cannot limit those to named resources. The Role is namespaced
+      and bound only to the dex ServiceAccount
