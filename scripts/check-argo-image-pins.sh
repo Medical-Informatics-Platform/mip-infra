@@ -44,6 +44,22 @@ grep -oE 'image: [^[:space:]]+' "$TMPDIR/upstream.yaml" \
 yq '.images[] | .name + " " + (.name | line_comment) + " " + .digest' \
   "$KUSTOMIZATION" | sort -u > "$TMPDIR/pins.txt"
 
+# Digest of the manifest a tag points to. --raw fetches only that manifest,
+# and hashing its bytes gives the digest. Without --raw, imagetools also
+# fetches every platform manifest, which public.ecr.aws rate-limits (429) for
+# anonymous clients such as CI runners. Retries cover the remaining 429s.
+manifest_digest() {
+  local attempt sum
+  for attempt in 1 2 3 4 5; do
+    if sum=$(docker buildx imagetools inspect --raw "$1" | sha256sum); then
+      echo "sha256:${sum%% *}"
+      return 0
+    fi
+    sleep $((attempt * 5))
+  done
+  return 1
+}
+
 FAIL=0
 while read -r name tag; do
   pin=$(awk -v n="$name" '$1 == n' "$TMPDIR/pins.txt")
@@ -58,7 +74,7 @@ while read -r name tag; do
     FAIL=1
     continue
   fi
-  digest=$(docker buildx imagetools inspect "$name:$tag" --format '{{.Manifest.Digest}}')
+  digest=$(manifest_digest "$name:$tag")
   if [[ "$pinned_digest" != "$digest" ]]; then
     echo "DIGEST   $name:$tag is pinned to $pinned_digest, the registry serves $digest" >&2
     FAIL=1
