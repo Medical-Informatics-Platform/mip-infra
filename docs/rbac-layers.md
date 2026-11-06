@@ -85,7 +85,7 @@ Source of truth: [`projects/static/`](../projects/static/) and the per-fed templ
 | Project | Destinations | Cluster writes allowed | Namespaced writes allowed | RBAC allowed |
 |---|---|---|---|---|
 | **mip-argo-project-infrastructure** | `argocd-mip-team` | `Namespace` | `Application`, `ApplicationSet`, `AppProject` | none |
-| **mip-argo-project-common** | `ingress-nginx`, `mip-common-datacatalog` | `Namespace`, `PV`, `IngressClass`, `GatewayClass`, `ClusterIssuer` | workload kinds + Ingress + Gateway API routes | ❌ blacklisted |
+| **mip-argo-project-common** | `ingress-nginx`, `mip-common-datacatalog`, `mip-notebooks-system`, `mip-athena` | `Namespace`, `PV`, `IngressClass`, `GatewayClass`, `ClusterIssuer` | workload kinds + Ingress + Gateway API routes | ❌ blacklisted |
 | **mip-argo-project-monitoring** | `elastic-system` | none | workload kinds + Ingress + Gateway API routes + ECK CRs | ❌ blacklisted |
 | **mip-argo-project-federations** *(umbrella)* | `argocd-mip-team` | none | `Application` only | ❌ blacklisted |
 | **mip-argo-project-federation-`<name>`** *(per-fed, templated)* | `federation-<name>`, `argocd-mip-team` | `Namespace` | full workload set + Ingress + Gateway API routes + `NotebookProfile` | ❌ not whitelisted (hub binding by the notebook RBAC reconciler, Layer 4) |
@@ -207,6 +207,8 @@ review the diff, commit snapshot + tag together.
   exists; no glue between it and the install flow.
 
 ### Operability
-- **Renovate (or equivalent) for the upstream Argo tag** in
-  [patches/kustomization.yaml](../argo-setup/patches/kustomization.yaml) so the
-  `sed`-at-install dance in the README becomes obsolete.
+- **Renovate for the upstream Argo tag** — done. A `customManagers` entry in
+  [`renovate.json5`](../renovate.json5) tracks the pinned tag in
+  [patches/kustomization.yaml](../argo-setup/patches/kustomization.yaml) and opens
+  the bump PR automatically; the [Bumping Argo CD](../argo-setup/README.md#bumping-argo-cd)
+  procedure still applies to review and reconcile the ClusterRole diff.

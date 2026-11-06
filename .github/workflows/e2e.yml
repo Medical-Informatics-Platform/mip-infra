@@ -120,8 +120,8 @@ jobs:
           rm -f "$tarball" kustomize
       - name: Install yq (pinned + sha256 verified)
         env:
-          YQ_VERSION: v4.53.3
-          YQ_SHA256: b4077cab0f9ee5ce8381e602d090daa69a0afb7e57eb9a5b20e9cb416d7f6794
+          YQ_VERSION: v4.54.1
+          YQ_SHA256: e68a456f90c577af3fe4960184b3a3cf5c461e0348407c10f107da3a5fec8972
         run: |
           set -euo pipefail
           tarball=yq_linux_amd64.tar.gz
@@ -131,7 +131,7 @@ jobs:
           tar -xzf "$tarball" ./yq_linux_amd64
           sudo install -m 0755 yq_linux_amd64 /usr/local/bin/yq
           rm -f "$tarball" yq_linux_amd64
-      - uses: helm/kind-action@ef37e7f390d99f746eb8b610417061a60e82a6cc  # v1.14.0
+      - uses: helm/kind-action@1544676c07bb3570fcb70166beaa07c4528fd4aa  # v1.15.1
         with:
           cluster_name: mip-e2e
           wait: 120s

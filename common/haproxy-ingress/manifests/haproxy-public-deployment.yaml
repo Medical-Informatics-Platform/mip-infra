@@ -4,6 +4,15 @@ kind: Deployment
 metadata:
   name: haproxy-public-controller
   namespace: ingress-nginx
+  annotations:
+    checkov.io/skip1: CKV_K8S_40=the image user haproxy is UID 1000 and only it can
+      write /etc/haproxy, a higher UID breaks startup
+    checkov.io/skip2: CKV_K8S_22=haproxy writes its config, maps and certs to /etc/haproxy
+      on the image filesystem at startup
+    checkov.io/skip3: CKV_K8S_25=haproxy_wrapper has the cap_net_bind_service file
+      capability, the kernel refuses to run it without that capability
+    checkov.io/skip4: CKV_K8S_38=the ingress controller reads Ingresses, Services
+      and Secrets and updates Ingress status through the API server
   labels:
     app.kubernetes.io/name: haproxy-public
     app.kubernetes.io/instance: haproxy-public
@@ -25,9 +34,15 @@ spec:
         app.kubernetes.io/managed-by: argocd
     spec:
       serviceAccountName: haproxy-public
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 1000
+        fsGroup: 10000
+        seccompProfile: {type: RuntimeDefault}
       containers:
         - name: controller
-          image: haproxytech/kubernetes-ingress:3.2.16
+          image: haproxytech/kubernetes-ingress:3.2.19@sha256:ff8669d109956f06f3915332352dc4020dad211791f5ae82bd7a83d777f55d90
           imagePullPolicy: IfNotPresent
           args:
             - --configmap=ingress-nginx/haproxy
@@ -58,6 +73,13 @@ spec:
             httpGet: {path: /healthz, port: controller}
             initialDelaySeconds: 10
             periodSeconds: 10
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              cpu: '1'
+              memory: 512Mi
           securityContext:
             allowPrivilegeEscalation: false
             capabilities: {add: [NET_BIND_SERVICE], drop: [ALL]}
