@@ -18,6 +18,11 @@ kind: StatefulSet
 metadata:
   name: exaflow-localworker
   namespace: federation-z
+  annotations:
+    checkov.io/skip1: CKV_K8S_22=the worker appends lazy_agg_rewrites.log in its code
+      folder, a read-only root needs a runtime test first
+    checkov.io/skip2: CKV2_K8S_6=no NetworkPolicy is shipped for the remote node,
+      common/security only covers the central cluster
   labels:
     app: exaflow-worker
     nodeType: localworker
@@ -35,6 +40,13 @@ spec:
         app: exaflow-worker
         nodeType: localworker
     spec:
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        # The image user appuser is UID and GID 10001 (exaflow/worker/Dockerfile).
+        runAsUser: 10001
+        runAsGroup: 10001
+        seccompProfile: {type: RuntimeDefault}
       volumes:
         - name: duckdb-data
           emptyDir: {}
@@ -43,7 +55,10 @@ spec:
             name: synthetic-data  # built by deploy-worker.sh: CDEsMetadata.json and the node's CSV
       containers:
         - name: worker
-          image: madgik/exaflow_worker:1.2.1
+          image: madgik/exaflow_worker:1.2.1@sha256:ce002cfa6d0b0b07c8fcae6d090e1061f956d2797712a832126932cc45070edb
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities: {drop: [ALL]}
           ports:
             - name: grpc
               containerPort: 5672
