@@ -15,3 +15,4 @@ resources:
   - service.yaml
   - serviceexport.yaml
   - statefulset.yaml
+  - networkpolicy.yaml

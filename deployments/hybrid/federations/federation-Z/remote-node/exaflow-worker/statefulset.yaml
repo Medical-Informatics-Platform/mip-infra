@@ -9,9 +9,12 @@
 #   - WORKER_IDENTIFIER is set explicitly (deploy-worker.sh substitutes the
 #     placeholder with the Submariner cluster ID) instead of the node name,
 #     which could collide with a central node name.
-#   - CONTROLLER_IP and AGGREGATION_SERVER_DNS use clusterset names exported by
-#     the central cluster; the service-link environment variables the template
-#     relies on do not exist across clusters.
+#   - AGGREGATION_SERVER_DNS is the clusterset name exported by the central
+#     cluster; the service-link environment variables the template relies on do
+#     not exist across clusters. CONTROLLER_IP is kept because the worker's
+#     configuration expects the variable. Only the client of a Flower algorithm
+#     reads it, and the central cluster neither exports the controller nor admits
+#     its API from remote nodes, so Flower algorithms do not run on this worker.
 #   - /opt/csvs is a ConfigMap with the synthetic data model.
 apiVersion: apps/v1
 kind: StatefulSet

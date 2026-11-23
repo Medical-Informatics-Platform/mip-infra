@@ -267,21 +267,19 @@ federation needs from its remote nodes are allowed per component and port in
 the federation's own `submariner-policies/` directory, with one `ipBlock` per
 remote pod CIDR.
 
-`remote-clusters/` adds a cluster-wide safety net: a Calico `Tier`
-(`remote-clusters`, order 500) and a `GlobalNetworkPolicy` that deny any
-traffic from or to the remote CIDRs outside the exaflow controller, aggregation
-server and Flower server of hybrid federations, and pass everything else on to
-the Kubernetes NetworkPolicies. It is synced by the `netpol-remote-clusters`
-Application (project `mip-argo-project-security`, which whitelists `Tier` and
-`GlobalNetworkPolicy`; the application controller ClusterRole grants the
-matching verbs). Calico 3.29 or later is required for tiers
-(`kubectl get tiers.projectcalico.org` must list `default`).
+`remote-clusters/` adds a cluster-wide safety net: a Calico `Tier` (`remote-clusters`, order 500) and its end-of-tier policy. That policy passes all traffic that no federation policy decided on to the Kubernetes NetworkPolicies.
 
-When a remote node is added, its pod CIDR goes into the federation's
-`submariner-policies/network-policy.yaml` and its pod and service CIDRs into
-`remote-clusters/global-deny-remote-cidrs.yaml`;
-`scripts/check-remote-cidrs.sh` (run in CI) asserts that the three places agree
-with the node's `submariner-values.yaml`.
+`remote-networks/` is the chart for the policy of one hybrid federation in that tier, `remote-clusters.<namespace>`. It denies all traffic from or to the federation's remote CIDRs, except two flows in the federation's own namespace (matched by `kubernetes.io/metadata.name`): remote workers to the aggregation server, and the controller to the remote workers. The controller's HTTP API and the Flower server are not reachable from remote networks. Other federations are closed to these networks like any other namespace.
+
+Neither directory names a federation or a network. The ApplicationSet `federation-remote-networks` takes the namespace from the federation's directory name and the networks from `remote-networks.yaml` in that directory. The Application `netpol-remote-clusters` syncs the tier, and `netpol-<namespace>-remote` syncs each federation policy. Both are in project `mip-argo-project-security`, which whitelists `Tier` and `GlobalNetworkPolicy`; the application controller ClusterRole grants the matching verbs on policies named `remote-clusters.*`. Tiers need Calico 3.29 or later (`kubectl get tiers.projectcalico.org` must list `default`).
+
+To add a remote node, put its pod CIDR into the federation's `submariner-policies/network-policy.yaml` and its pod and service CIDRs into the federation's `remote-networks.yaml`. Nothing under `common/` changes, not even for a new hybrid federation. `scripts/check-remote-cidrs.sh` (CI; needs `yq` and `helm`) checks that:
+
+- both files agree with the node's `submariner-values.yaml`
+- no network overlaps another one or a central network
+- the rendered policy passes the networks to the federation's namespace only
+
+Migration: the former shared policy `remote-clusters.confine-remote-clusters` is not pruned and stays until deleted by hand. Its order is lower, so while it exists it decides first and the federation policies have no effect. `check-central.sh` warns while it exists. Delete it once the script reports the federation's policy as correct: `kubectl delete globalnetworkpolicies.projectcalico.org remote-clusters.confine-remote-clusters`.
 
 The worker isolation policies of the federation chart
 (`federation/templates/exareme-network-policy.yaml`) still select the

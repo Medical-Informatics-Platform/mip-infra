@@ -42,7 +42,7 @@ Two SAs, both cluster-scoped. Sources:
 | `apiextensions.k8s.io` | customresourcedefinitions | C/U/D/P | only ECK chart needs CRDs at install; `mip-common` and `mip-monitoring` whitelist them |
 | `admissionregistration.k8s.io` | mutating/validatingadmissionwebhooks | **none** | intentionally **not granted** — every AppProject blacklists Webhooks; if a future chart needs them, restore here AND whitelist in the AppProject in the same PR |
 | `submariner.io`, `operator.openshift.io`, `config.openshift.io`, `projectcalico.org`, `network.openshift.io` | submariners/gateways/clusters/dnses/networks/ippools/etc. | mixed | submariner-only |
-| `projectcalico.org` | tiers; `tier.globalnetworkpolicies` named `remote-clusters.*` | C/U/D/P | `mip-security` only: confinement of the Submariner remote CIDRs (`common/security/remote-clusters`); Calico's tiered-policy RBAC, no write on default-tier policies |
+| `projectcalico.org` | tiers; `tier.globalnetworkpolicies` named `remote-clusters.*` | C/U/D/P | `mip-security` only: confinement of the Submariner remote CIDRs (`common/security/remote-clusters`, `common/security/remote-networks`); Calico's tiered-policy RBAC, no write on default-tier policies |
 | `multicluster.x-k8s.io` | serviceexports | C/U/D/P | hybrid federations export the aggregation server and controller to remote nodes |
 | ECK groups (`elasticsearch.k8s.elastic.co`, etc.) | elasticsearches, kibanas, beats, … | C/U/D/P/G/L/W | mip-monitoring-only |
 

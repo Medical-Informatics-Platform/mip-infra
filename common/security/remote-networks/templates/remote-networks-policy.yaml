@@ -1,0 +1,108 @@
+{{- /*
+One policy per hybrid federation in the remote-clusters tier
+(common/security/remote-clusters). Two flows between the federation's remote
+networks and its namespace are passed to the namespace's NetworkPolicies, which
+decide per remote network: remote workers to the aggregation server, and the
+controller to the remote workers. Every other flow from or to these networks is
+denied in every namespace, other hybrid federations included.
+
+The controller's HTTP API and the Flower server on the global worker are not
+passed. The API carries no authentication: a caller lists the datasets of the
+federation and starts computations on them. No component of a remote node needs
+it except the client process of a Flower algorithm, which also dials the Flower
+server. Flower algorithms therefore cannot use datasets held by remote nodes.
+
+The policy allows nothing itself and has no rule for other traffic: that
+continues with the next policy of the tier and ends at
+remote-clusters.pass-other-traffic. An unconditional Pass here would hide the
+policies of federations evaluated after this one.
+
+The namespace is matched by kubernetes.io/metadata.name. The API server sets
+this label on every namespace and keeps it equal to the name, so a label added
+to another namespace cannot redirect remote traffic.
+
+Only pod CIDRs are passed: remote pods are the source of every flow that
+reaches this cluster, and the controller dials remote pod addresses (the
+exported worker Service is headless). The Deny rules also list the service
+CIDRs.
+
+Selector: Kubernetes pods only. Workload endpoints carry this label, host
+endpoints do not. None exist on this cluster, and remote pods cannot reach node
+addresses because Submariner only routes the pod and service CIDRs. The one
+host-terminated destination behind a ClusterIP, the API server at the first
+service address, is out of reach of any workload policy (see
+docs/hybrid-federations.md, residual risks). applyOnForward, preDNAT and
+doNotTrack are host endpoint settings and are not needed: policy on the
+destination pod is evaluated after kube-proxy's DNAT, against the preserved
+remote source address.
+*/ -}}
+{{- $ns := .Values.targetNamespace | toString }}
+{{- if not (regexMatch `^[a-z0-9]([-a-z0-9]*[a-z0-9])?$` $ns) }}
+{{- fail (printf "targetNamespace %q is not a namespace name" $ns) }}
+{{- end }}
+{{- $minPrefix := int .Values.minPrefixLength }}
+{{- $pods := list }}
+{{- $all := list }}
+{{- range $i, $node := .Values.remoteNodes }}
+{{- range $key := list "podCidr" "serviceCidr" }}
+{{- $cidr := index $node $key | default "" | toString }}
+{{- if not (regexMatch `^([0-9]{1,3}\.){3}[0-9]{1,3}/[0-9]{1,2}$` $cidr) }}
+{{- fail (printf "remoteNodes[%d].%s is not an IPv4 CIDR: %q" $i $key $cidr) }}
+{{- end }}
+{{- if lt (int (last (splitList "/" $cidr))) $minPrefix }}
+{{- fail (printf "remoteNodes[%d].%s %s is wider than /%d (minPrefixLength)" $i $key $cidr $minPrefix) }}
+{{- end }}
+{{- $all = append $all $cidr }}
+{{- if eq $key "podCidr" }}
+{{- $pods = append $pods $cidr }}
+{{- end }}
+{{- end }}
+{{- end }}
+{{- $pods = uniq $pods }}
+{{- $all = uniq $all }}
+{{- if $pods }}
+---
+apiVersion: projectcalico.org/v3
+kind: GlobalNetworkPolicy
+metadata:
+  # Policies outside the default tier carry the tier name as prefix.
+  name: {{ .Values.tier }}.{{ $ns }}
+spec:
+  tier: {{ .Values.tier }}
+  order: {{ int .Values.order }}
+  selector: projectcalico.org/orchestrator == 'k8s'
+  types: [Ingress, Egress]
+  ingress:
+    # Remote workers -> aggregation server: a computation that runs on a remote
+    # worker sends its partial results there. Pass: the federation's own
+    # NetworkPolicy decides per remote CIDR.
+    - action: Pass
+      protocol: TCP
+      source:
+        nets: {{ toJson $pods }}
+      destination:
+        namespaceSelector: kubernetes.io/metadata.name == '{{ $ns }}'
+        selector: app == 'exaflow-aggregation-server'
+        ports: [{{ int .Values.ports.aggregationServer }}]
+    # Everything else arriving from these networks, into any namespace: the
+    # namespaces without policies of their own, the other federations, and the
+    # other components of this federation, its controller included.
+    - action: Deny
+      source:
+        nets: {{ toJson $all }}
+  egress:
+    # Controller -> the federation's remote workers, gRPC.
+    - action: Pass
+      protocol: TCP
+      source:
+        namespaceSelector: kubernetes.io/metadata.name == '{{ $ns }}'
+        selector: app == 'exaflow-controller'
+      destination:
+        nets: {{ toJson $pods }}
+        ports: [{{ int .Values.ports.remoteWorker }}]
+    # No other pod on this cluster talks to these networks, and no controller
+    # talks to the remote nodes of another federation.
+    - action: Deny
+      destination:
+        nets: {{ toJson $all }}
+{{- end }}

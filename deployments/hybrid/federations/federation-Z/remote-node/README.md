@@ -11,11 +11,11 @@ The central side (broker, operator, controller, network policies, ServiceExports
 | Central (RKE2) | Submariner broker namespace and operator, chart 0.25.0, gateway on a LoadBalancer address | `common/submariner/` |
 | Central | Per-node broker accounts, admission policies, enrollment scripts | `base/mip-infrastructure/rbac/submariner-remote-admission.yaml`, `../enrollment/` |
 | Central | exaflow controller, aggregation server, remote allow policies, ServiceExports | `../mip-infrastructure/` |
-| Central | Cluster-wide deny of remote CIDRs | `common/security/remote-clusters/` |
+| Central | Calico tier denying the remote CIDRs, each passed only to its own federation | `common/security/remote-clusters/`, `common/security/remote-networks/`, `../mip-infrastructure/remote-networks.yaml` |
 | Remote (this node) | Single-node MicroK8s, Calico with VXLAN, Calico API server, Submariner operator via Helm | `setup-microk8s.sh`, `join-submariner.sh`, `submariner-values.yaml` |
 | Remote | exaflow local worker, headless Service `exareme2-test-workers-service`, ServiceExport | `exaflow-worker/`, `deploy-worker.sh` |
 
-Only the remote node initiates the IPsec tunnel to the central gateway (`natEnabled: true`, no LoadBalancer on the remote). The central controller resolves `exareme2-test-workers-service.federation-z.svc.clusterset.local` to the worker pod address and dials it on port 5672 across the tunnel; the worker reaches the central aggregation server on `exaflow-aggregation-service.federation-z.svc.clusterset.local:50051`, and during Flower runs the controller API on 5000 and the Flower server on the global worker on 8080. Every other flow between the clusters is denied on the central side.
+Only the remote node initiates the IPsec tunnel to the central gateway (`natEnabled: true`, no LoadBalancer on the remote). The central controller resolves `exareme2-test-workers-service.federation-z.svc.clusterset.local` to the worker pod address and dials it on port 5672 across the tunnel; the worker reaches the central aggregation server on `exaflow-aggregation-service.federation-z.svc.clusterset.local:50051`. Every other flow between the clusters is denied on the central side. That includes the controller's HTTP API and the Flower server: the API is unauthenticated, so remote nodes do not reach it, and Flower algorithms do not run on remote workers.
 
 ## Parameters
 
@@ -41,7 +41,7 @@ Changing the CIDRs after installation requires `snap remove --purge microk8s` an
 - Outbound access from the node: TCP 6443 to `<broker-api-host>`; UDP 4500 and UDP 4490 to `<gateway-public-ip>`; TCP 443 to `api.snapcraft.io`, `quay.io`, `registry-1.docker.io`, `github.com`, `raw.githubusercontent.com`, `submariner-io.github.io`, `api.ipify.org`.
 - Inbound UDP 4500 and 4490 from `<gateway-public-ip>` are optional; one-way reachability suffices because this node initiates the tunnel.
 - On the central cluster: `kubectl` with cluster-admin for the enrollment (steps 1 and 7), the out-of-band files `base/mip-infrastructure/rbac/submariner-rbac.yaml` and `submariner-remote-admission.yaml` applied, the federation's remote allow policies and the cluster-wide deny synced with the node's CIDRs, and `subctl` at the pinned version for the verification commands.
-- On the central cluster, a healthy Submariner side: `../enrollment/check-central.sh` passes (gateway node labelled and active, Calico API server available, broker lists the central cluster, PSK in the operator namespace only, admission policies present, hybrid namespace labelled, policy Applications synced). The two checks that fail after a node redeploy are the gateway label and the Calico API server; both belong to the cluster installation (see `docs/hybrid-federations.md`).
+- On the central cluster, a healthy Submariner side: `../enrollment/check-central.sh` passes (gateway node labelled and active, Calico API server available, broker lists the central cluster, PSK in the operator namespace only, admission policies present, the tier policy assigning the remote networks to `federation-z`, policy Applications synced). The two checks that fail after a node redeploy are the gateway label and the Calico API server; both belong to the cluster installation (see `docs/hybrid-federations.md`).
 - A VM snapshot before each step that changes the node (steps 0, 4, 5 and 8).
 
 Copy this directory to the node before starting, for example:
@@ -244,6 +244,8 @@ DATASET=synthetic_b ./deploy-worker.sh   # second node
 
 The script applies the namespace `federation-z`, builds the ConfigMap `synthetic-data` from `exaflow-worker/data/synthetic_v_0_1/` (`CDEsMetadata.json` and the CSV named by `DATASET`), renders `exaflow-worker/` with kustomize, substitutes the worker identifier (the enrolled cluster ID), applies the headless Service, the ServiceExport and the worker StatefulSet, waits for the central imports to appear in the namespace and then for the worker to become ready. Readiness requires the data model to load from the ConfigMap, mounted at `/opt/csvs/synthetic_v_0_1`. The worker reads it only at start-up, so the script restarts an existing worker when the ConfigMap changed. Every node serves a different CSV and all nodes share the same metadata file; see Adding a second remote node.
 
+`exaflow-worker/networkpolicy.yaml` limits the worker to the central cluster. In: only the central pod CIDR, on the gRPC port 5672. Out: DNS and the central aggregation server (50051) at its ClusterIP in the central service CIDR. If a tunnel to another remote node forms anyway, that node's pods cannot reach the worker, and the worker cannot send data anywhere else.
+
 Verify on the central cluster:
 
 ```bash
@@ -282,7 +284,7 @@ To serve real data, replace the `csv-data` ConfigMap volume in `exaflow-worker/s
 
 Every node has its own CIDRs, cluster ID, values file and dataset; the scripts are shared. The second node of federation-Z uses `10.4.0.0/16`, `10.152.186.0/24`, `submariner-values-node2.yaml` and the dataset `synthetic_b`; a further node needs the same four additions.
 
-1. Repository first: the node's pod CIDR is an `ipBlock` in every rule of `../mip-infrastructure/submariner-policies/network-policy.yaml`, its pod and service CIDRs are in `common/security/remote-clusters/global-deny-remote-cidrs.yaml`, a copy of `submariner-values.yaml` with the node's CIDRs exists next to it (`submariner-values-<node>.yaml`), and `exaflow-worker/data/synthetic_v_0_1/` holds the node's CSV with its dataset code listed in `CDEsMetadata.json`. `scripts/check-remote-cidrs.sh` asserts that the CIDRs agree. Merge, and let Argo CD sync `netpol-remote-clusters` and the federation's `submariner-network-policy` before the join.
+1. Repository first: the node's pod CIDR is an `ipBlock` in every rule of `../mip-infrastructure/submariner-policies/network-policy.yaml`, its pod and service CIDRs are an entry of `../mip-infrastructure/remote-networks.yaml`, a copy of `submariner-values.yaml` with the node's CIDRs exists next to it (`submariner-values-<node>.yaml`), and `exaflow-worker/data/synthetic_v_0_1/` holds the node's CSV with its dataset code listed in `CDEsMetadata.json`. `scripts/check-remote-cidrs.sh` asserts that the CIDRs agree. Merge, and let Argo CD sync `netpol-federation-z-remote` and the federation's `submariner-network-policy` before the join.
 2. Enroll with the node's CIDRs and its own output directory:
 
    ```bash
@@ -308,7 +310,7 @@ Every node has its own CIDRs, cluster ID, values file and dataset; the scripts a
    The join refuses a values file whose CIDRs differ from the live cluster. A node behind NAT needs nothing else: `natEnabled` is already set, the tunnel is initiated from the node and the gateway discovers its public address (see Troubleshooting if the connection stays in `connecting`).
 4. Steps 6 and 7 as for the first node.
 5. Step 8 with the node's dataset: `DATASET=synthetic_b ./deploy-worker.sh`. The controller drops a dataset code that two workers serve, so every node serves a different CSV. The controller merges the dataset enumerations of one data model across workers, but it also keeps every distinct metadata version it receives (`data_models_attributes`, property `cdes`), and the platform backend builds the variable tree the UI shows from the first entry only: with two versions in play the UI lists the datasets of whichever node registered first (observed on 2026-09-29: `synthetic_b` absent from the UI while every controller endpoint listed it). All nodes must therefore carry the byte-identical `CDEsMetadata.json`. When that file changes, re-run `deploy-worker.sh` on every existing node right away: the script restarts their workers, and while a worker restarts the central controller loses the remote workers as described in step 8 unless another remote worker is ready. `controller.workers_dns` on the central side does not change: all nodes export the same headless Service name, and the clusterset name resolves to every ready remote worker pod.
-6. The remote gateways also try tunnels to each other, because Submariner forms a full mesh. Between a node with a public address and a node behind NAT such a tunnel can come up. The IPsec firewall (step 4 and the hardening playbook) blocks it. The gateways still log these attempts; Submariner has no hub-and-spoke option yet (proposal: `upstream-contributions/submariner-hub-and-spoke/`). Only the connections to the central cluster matter for the federation.
+6. The remote gateways also try tunnels to each other, because Submariner forms a full mesh. Between a node with a public address and a node behind NAT such a tunnel can come up. The IPsec firewall (step 4 and the hardening playbook) blocks it, and the worker's NetworkPolicy (step 8) admits only the central networks. The gateways still log these attempts; Submariner has no hub-and-spoke option yet (proposal: `upstream-contributions/submariner-hub-and-spoke/`). Only the connections to the central cluster matter for the federation.
 
 ## Removing a remote node
 
@@ -428,7 +430,7 @@ The last command stops MicroK8s from re-issuing its certificates and restarting 
 
 ### A flow is denied on the central side
 
-The Calico policy `remote-clusters.confine-remote-clusters` denies everything from the remote CIDRs except the four allowed flows, and the namespaced policies in `federation-z` allow only those ports from the listed `ipBlock`s. Check that the node's pod CIDR is present in both files and that the namespace `federation-z` carries the label `mip.federation-type=hybrid`. On the central node hosting the destination pod, `iptables-save -c | grep confine-remote-clusters` shows the deny counters.
+The Calico policy `remote-clusters.federation-z` denies everything from the federation's remote CIDRs except the four allowed flows towards the namespace `federation-z`, and the namespaced policies in `federation-z` allow only those ports from the listed `ipBlock`s. Check that the node's CIDRs are an entry of `../mip-infrastructure/remote-networks.yaml` and that its pod CIDR is in the namespaced policies; `../enrollment/check-central.sh` compares the two on the cluster. On the central node hosting the destination pod, `iptables-save -c | grep remote-clusters.federation-z` shows the deny counters.
 
 ### Route agent cannot create IP pools
 

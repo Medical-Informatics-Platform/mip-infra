@@ -1,0 +1,11 @@
+---
+apiVersion: v2
+name: federation-remote-networks
+description: Calico policy assigning the remote networks of one hybrid federation to its namespace (auto-discovered)
+type: application
+version: 1.0.0
+appVersion: 1.0.0
+keywords: [security, networkpolicy, calico, federation, submariner]
+sources: [https://github.com/Medical-Informatics-Platform/mip-infra.git]
+maintainers:
+  - name: MIP Team

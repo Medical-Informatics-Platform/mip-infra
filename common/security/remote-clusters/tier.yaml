@@ -1,0 +1,46 @@
+---
+# Calico tier that confines traffic with remote clusters over the Submariner
+# tunnel. It names no federation and no network. Each hybrid federation adds
+# one policy, remote-clusters.<namespace>, built by the chart ../remote-networks
+# from its remote-networks.yaml. That policy passes the federation's remote
+# networks to the exaflow components of its namespace, where its
+# NetworkPolicies decide per component and port, and denies them everywhere
+# else. Nothing in the tier allows traffic.
+#
+# Why a tier: the Kubernetes NetworkPolicies live in the default tier (order
+# 1,000,000). A Pass rule there skips them all, and the endpoint profile
+# allows. From a tier with a lower order, Pass continues with the next tier,
+# so the NetworkPolicies still apply. Needs Calico 3.29 or later.
+apiVersion: projectcalico.org/v3
+kind: Tier
+metadata:
+  name: remote-clusters
+spec:
+  # Below the default tier (1,000,000) and below kube-admin (1,000), so no
+  # later policy can allow remote traffic past this tier.
+  order: 500
+  # Safety net: an endpoint selected by a policy of this tier that matches no
+  # rule continues with the next tier instead of the end-of-tier drop. The
+  # policy below does the same explicitly.
+  defaultAction: Pass
+---
+# End of the tier. The federation policies (order 200) select every pod and
+# only hold rules for their own remote networks, so all other traffic of every
+# pod arrives here and continues with the default tier (Kubernetes
+# NetworkPolicies) and the profiles.
+apiVersion: projectcalico.org/v3
+kind: GlobalNetworkPolicy
+metadata:
+  # Policies outside the default tier carry the tier name as prefix.
+  name: remote-clusters.pass-other-traffic
+spec:
+  tier: remote-clusters
+  order: 1000
+  # Kubernetes pods only, like the federation policies: workload endpoints
+  # carry this label, host endpoints do not.
+  selector: projectcalico.org/orchestrator == 'k8s'
+  types: [Ingress, Egress]
+  ingress:
+    - action: Pass
+  egress:
+    - action: Pass

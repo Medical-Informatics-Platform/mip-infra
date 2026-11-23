@@ -22,8 +22,9 @@ spec:
       server: https://kubernetes.default.svc
     - namespace: mip-notebooks-system
       server: https://kubernetes.default.svc
-    # Nominal destination of netpol-remote-clusters, which renders
-    # cluster-scoped objects only (common/security/remote-clusters)
+    # Nominal destination of netpol-remote-clusters and of the
+    # netpol-<federation>-remote Applications, which render cluster-scoped
+    # objects only (common/security/remote-clusters and remote-networks)
     - namespace: argocd-mip-team
       server: https://kubernetes.default.svc
   clusterResourceWhitelist:

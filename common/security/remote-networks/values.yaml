@@ -1,0 +1,34 @@
+---
+# Default values of the remote-networks policy of one hybrid federation.
+# The ApplicationSet federation-remote-networks (../netpol.yaml) sets the first
+# two from the federation's directory: targetNamespace from the directory
+# name, remoteNodes from the file remote-networks.yaml in it. Nothing here
+# names a federation or a network.
+
+# Namespace of the hybrid federation
+targetNamespace: ''
+
+# Remote nodes of the federation, one entry per node:
+#   - podCidr: 192.0.2.0/24        # pod network of the remote cluster
+#     serviceCidr: 198.51.100.0/24  # service network of the remote cluster
+# An empty list renders no policy.
+remoteNodes: []
+
+# Calico tier of the policy (common/security/remote-clusters)
+tier: remote-clusters
+
+# Evaluated before the end-of-tier policy remote-clusters.pass-other-traffic
+# (order 1000)
+order: 200
+
+# Shortest prefix accepted for a remote network. The Deny rules apply to every
+# pod of the cluster, so a network that is too wide (0.0.0.0/0, 10.0.0.0/8)
+# would cut traffic that has nothing to do with remote clusters.
+minPrefixLength: 16
+
+# Ports of the exaflow components (values of the exaflow chart). The controller
+# HTTP API and the Flower server are deliberately absent: remote networks do not
+# reach them.
+ports:
+  aggregationServer: 50051
+  remoteWorker: 5672  # gRPC of the remote workers

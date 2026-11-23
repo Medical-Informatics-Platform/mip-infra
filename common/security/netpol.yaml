@@ -64,9 +64,11 @@ spec:
           }}{{ else }}{{ .path.path | dir | base | lower }}{{ end }}'
       syncPolicy:
         syncOptions: [CreateNamespace=true, ApplyOutOfSyncOnly=true]
-        # Labels of the federation namespace. Cluster-wide policies select
-        # hybrid federations by mip.federation-type, so every federation
-        # namespace must carry it; this Application is the one that manages it.
+        # Labels of the federation namespace, managed by this Application.
+        # The policies of the common namespaces select federations by
+        # mip.federation-type (common-templates, federationAccess). The
+        # remote-clusters tier uses no labels: each hybrid federation's policy
+        # names its namespace (federation-remote-networks below).
         managedNamespaceMetadata:
           labels:
             name: '{{ if contains "local" .path.path }}{{ .path.basename | lower }}{{
@@ -126,12 +128,13 @@ spec:
         automated:
           selfHeal: true
 ---
-# Cluster-wide confinement of the Submariner remote CIDRs: a Calico Tier and
-# GlobalNetworkPolicy (common/security/remote-clusters). Plain manifests, so
-# kustomize renders them without the Calico CRDs; the cluster serves
-# projectcalico.org/v3 through the Calico API server. No prune, like the other
-# policy Applications: removing the policy from git leaves it on the cluster
-# until deleted by hand.
+# Calico tier for the traffic exchanged with remote clusters over Submariner,
+# and its end-of-tier policy (common/security/remote-clusters). Generic: the
+# policy of each hybrid federation comes from the ApplicationSet
+# federation-remote-networks below. Plain manifests, so kustomize renders them
+# without the Calico CRDs; the cluster serves projectcalico.org/v3 through the
+# Calico API server. No prune, like the other policy Applications: removing a
+# policy from git leaves it on the cluster until deleted by hand.
 apiVersion: argoproj.io/v1alpha1
 kind: Application
 metadata:
@@ -141,8 +144,7 @@ metadata:
     app.kubernetes.io/part-of: common-network-policies
     app.kubernetes.io/managed-by: argocd
   annotations:
-    argocd.argoproj.io/note: Confines traffic from and to remote clusters to the exaflow
-      components of hybrid federations
+    argocd.argoproj.io/note: Calico tier for the traffic exchanged with remote clusters
 spec:
   project: mip-argo-project-security
   source:
@@ -158,3 +160,64 @@ spec:
     syncOptions: [ApplyOutOfSyncOnly=true]
     automated:
       selfHeal: true
+---
+# One Calico policy per hybrid federation in the remote-clusters tier:
+# remote-clusters.<namespace>, built by the chart
+# common/security/remote-networks. It passes the federation's remote networks
+# only to the exaflow components of the federation's namespace and denies
+# them everywhere else. The generator reads the file remote-networks.yaml of
+# every hybrid federation directory: the directory name gives the namespace,
+# as for federation-network-policies above, and the file gives the networks.
+# Nothing under common/ names a federation or a network.
+#
+# preserveResourcesOnDeletion: when a federation's file disappears, its
+# Application is removed but the policy stays on the cluster and keeps
+# confining the federation's remote networks until it is deleted by hand.
+apiVersion: argoproj.io/v1alpha1
+kind: ApplicationSet
+metadata:
+  name: federation-remote-networks
+  namespace: argocd-mip-team
+  labels:
+    app.kubernetes.io/managed-by: argocd
+    argocd.instance: mip-team
+  annotations:
+    argocd.argoproj.io/note: Assigns the remote networks of each hybrid federation to
+      its namespace
+spec:
+  generators:
+    - git:
+        repoURL: https://github.com/Medical-Informatics-Platform/mip-infra.git
+        revision: main
+        files:
+          - path: deployments/hybrid/federations/*/mip-infrastructure/remote-networks.yaml
+  goTemplate: true
+  syncPolicy:
+    preserveResourcesOnDeletion: true
+  template:
+    metadata:
+      name: netpol-{{ .path.path | dir | base | lower }}-remote
+      labels:
+        app.kubernetes.io/part-of: federation-network-policies
+        app.kubernetes.io/managed-by: argocd
+    spec:
+      project: mip-argo-project-security
+      source:
+        repoURL: https://github.com/Medical-Informatics-Platform/mip-infra.git
+        targetRevision: main
+        path: common/security/remote-networks
+        helm:
+          # remoteNodes is the list from the federation's file, passed as JSON
+          # (which is YAML); a file without that key renders no policy.
+          values: |
+            targetNamespace: {{ .path.path | dir | base | lower | quote }}
+            remoteNodes: {{ toJson .remoteNodes }}
+      destination:
+        server: https://kubernetes.default.svc
+        # Nominal: only a cluster-scoped object is rendered. Argo CD still
+        # checks this field against the project destinations.
+        namespace: argocd-mip-team
+      syncPolicy:
+        syncOptions: [ApplyOutOfSyncOnly=true]
+        automated:
+          selfHeal: true

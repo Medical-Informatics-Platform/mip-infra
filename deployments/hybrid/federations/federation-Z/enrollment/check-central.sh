@@ -11,9 +11,12 @@
 # cluster, PSK and broker credentials, no Secrets in the broker namespace, the
 # clusterset.local forward in the cluster CoreDNS, the Lighthouse export
 # records and the published address of every ServiceExport of the federation,
-# per-remote admission policies, hybrid namespace label, the policy
-# Applications, the API server egress pins of the network-policy charts
-# (apiServer.cidrs), and subctl (when installed).
+# per-remote admission policies, the federation's NetworkPolicies, the
+# remote-clusters tier (the federation's policy passes its remote networks only
+# to the namespace of FEDERATION_NS and there only to the aggregation server,
+# every connected remote network is denied elsewhere, the tier ends with a
+# Pass), the policy Applications, the API server egress pins of the
+# network-policy charts (apiServer.cidrs), and subctl (when installed).
 #
 # Parameters (environment variables or key=value arguments):
 #   FEDERATION_NS      default federation-z
@@ -30,7 +33,7 @@ set -uo pipefail
 for arg in "$@"; do
   case "$arg" in
     *=*) export "${arg?}" ;;
-    -h|--help) sed -n '2,24p' "$0"; exit 0 ;;
+    -h|--help) sed -n '2,27p' "$0"; exit 0 ;;
     *) printf 'ERROR: unknown argument %s (use KEY=value)\n' "$arg" >&2; exit 2 ;;
   esac
 done
@@ -262,6 +265,11 @@ else
   else
     fail "ServiceExports of ${FEDERATION_NS}" "${export_issues# }; check the Lighthouse export records above and kubectl -n ${OPERATOR_NS} logs deploy/submariner-lighthouse-agent"
   fi
+  # No remote component needs the controller: its API is closed to remote nodes. Argo CD does not prune, so
+  # a ServiceExport of the controller stays until deleted by hand.
+  if [[ " $exports" == *" exaflow-controller-service="* ]]; then
+    warn "ServiceExport exaflow-controller-service" "no longer needed; kubectl -n ${FEDERATION_NS} delete serviceexports.multicluster.x-k8s.io exaflow-controller-service"
+  fi
 fi
 
 # --- per-remote identities -------------------------------------------------------------------------------------
@@ -278,20 +286,108 @@ enrolled="$(kc -n "$BROKER_NS" get serviceaccounts -l submariner.io/remote-enrol
 [[ -n "${enrolled// /}" ]] && pass "enrolled remote accounts" "$enrolled" || warn "enrolled remote accounts" "none (enroll-remote.sh)"
 
 # --- federation namespace and policies -------------------------------------------------------------------------
-ftype="$(kc get namespace "$FEDERATION_NS" -o jsonpath='{.metadata.labels.mip\.federation-type}' 2>/dev/null)"
-if [[ "$ftype" == hybrid ]]; then
-  pass "namespace ${FEDERATION_NS} labelled hybrid"
-else
-  fail "namespace ${FEDERATION_NS} labelled hybrid" "mip.federation-type=${ftype:-missing}; set by Application netpol-${FEDERATION_NS}-hybrid (managedNamespaceMetadata); the global policy denies remote flows without it"
-fi
 pols="$(kc -n "$FEDERATION_NS" get networkpolicy -o jsonpath='{range .items[*]}{.metadata.name}{" "}{end}' 2>/dev/null)"
-for want in federation-default-deny remote-workers-to-controller controller-to-remote-workers remote-workers-to-aggregation-server; do
+for want in federation-default-deny controller-to-remote-workers remote-workers-to-aggregation-server; do
   [[ " $pols " == *" $want "* ]] && pass "NetworkPolicy ${want}" || fail "NetworkPolicy ${want}" "missing in ${FEDERATION_NS}"
 done
 [[ " $pols " == *" allow-submariner-cidrs "* ]] && warn "NetworkPolicy allow-submariner-cidrs" "obsolete all-ports policy still present; delete it"
-kc get globalnetworkpolicies.projectcalico.org remote-clusters.confine-remote-clusters >/dev/null 2>&1 \
-  && pass "global policy confine-remote-clusters" || warn "global policy confine-remote-clusters" "not present (Application netpol-remote-clusters)"
-for app in "netpol-${FEDERATION_NS}-hybrid" netpol-remote-clusters "${FEDERATION_NS}-submariner-network-policy" submariner-operator; do
+# Remote nodes do not reach the controller's HTTP API or the Flower server. Argo CD does not prune, so a
+# NetworkPolicy that admits them stays until deleted by hand. The tier check below shows whether it still has
+# an effect.
+for old in remote-workers-to-controller remote-workers-to-flower-server; do
+  [[ " $pols " == *" $old "* ]] && warn "NetworkPolicy ${old}" "obsolete: remote nodes do not reach this component; kubectl -n ${FEDERATION_NS} delete networkpolicy ${old}"
+done
+# Tier remote-clusters. Each hybrid federation has one policy in it, remote-clusters.<namespace> (chart
+# common/security/remote-networks): Pass rules that name the namespace (kubernetes.io/metadata.name) and list
+# the federation's remote pod CIDRs, then in each direction a Deny of all its remote networks. The tier ends
+# with remote-clusters.pass-other-traffic.
+cidr_set() { tr -d '[]"' | tr ', ' '\n' | sed '/^$/d' | sort -u | paste -sd, -; } # list or JSON array -> sorted set
+tier_policies="$(kc get globalnetworkpolicies.projectcalico.org -o jsonpath='{range .items[?(@.spec.tier=="remote-clusters")]}{.metadata.name}{" "}{end}' 2>/dev/null)"
+if [[ -z "${tier_policies// /}" ]]; then
+  warn "policies of the tier remote-clusters" "none found (Applications netpol-remote-clusters and netpol-${FEDERATION_NS}-remote)"
+else
+  # One line per rule of every policy of the tier: policy|direction|action|remote nets|namespaceSelector of the local side.
+  tier_rules=""
+  for p in $tier_policies; do
+    r="$(kc get globalnetworkpolicies.projectcalico.org "$p" -o jsonpath='{range .spec.ingress[*]}{"ingress|"}{.action}{"|"}{.source.nets}{"|"}{.destination.namespaceSelector}{"\n"}{end}{range .spec.egress[*]}{"egress|"}{.action}{"|"}{.destination.nets}{"|"}{.source.namespaceSelector}{"\n"}{end}' 2>/dev/null)"
+    tier_rules="${tier_rules}$(sed -e '/^$/d' -e "s/^/${p}|/" <<<"$r")"$'\n'
+  done
+  # Traffic that no federation policy decides must leave the tier with a Pass.
+  if [[ " $tier_policies " == *" remote-clusters.pass-other-traffic "* ]]; then
+    pass "end-of-tier policy pass-other-traffic"
+  elif [[ "$(kc get tiers.projectcalico.org remote-clusters -o jsonpath='{.spec.defaultAction}' 2>/dev/null)" == Pass ]]; then
+    warn "end-of-tier policy pass-other-traffic" "not present; only the tier's defaultAction Pass lets other traffic continue (Application netpol-remote-clusters)"
+  else
+    fail "end-of-tier policy pass-other-traffic" "not present and the tier's defaultAction is not Pass: traffic that matches no rule of the tier is dropped (Application netpol-remote-clusters)"
+  fi
+  # The federation's policy: Pass rules to this namespace only, with exactly the remote pod CIDRs the federation's
+  # own NetworkPolicies allow, then the Deny.
+  fed_policy="remote-clusters.${FEDERATION_NS}"
+  ns_name="^[[:space:]]*kubernetes\.io/metadata\.name[[:space:]]*==[[:space:]]*[\"']([a-z0-9-]+)[\"'][[:space:]]*$"
+  ns_cidrs="$(kc -n "$FEDERATION_NS" get networkpolicy controller-to-remote-workers -o jsonpath='{range .spec.egress[*].to[*]}{.ipBlock.cidr}{" "}{end}' 2>/dev/null | cidr_set)"
+  fed_rules="$(awk -F'|' -v p="$fed_policy" '$1 == p' <<<"$tier_rules" | cut -d'|' -f2-)"
+  problems=""
+  for dir in ingress egress; do
+    lines="$(grep "^${dir}|" <<<"$fed_rules")"
+    n="$(sed '/^$/d' <<<"$lines" | wc -l | tr -d ' ')"
+    if (( n < 2 )); then
+      problems="${problems} ${dir}: Pass rules and the final Deny expected, ${n} rule(s) found;"
+      continue
+    fi
+    i=0
+    while IFS='|' read -r _ action nets sel; do
+      i=$((i + 1))
+      if (( i == n )); then
+        [[ "$action" == Deny && -n "$nets" && -z "$sel" ]] || problems="${problems} ${dir}: the last rule is not the Deny of the federation's networks;"
+      elif [[ "$action" != Pass || -z "$nets" ]] || ! [[ "$sel" =~ $ns_name && "${BASH_REMATCH[1]}" == "$FEDERATION_NS" ]]; then
+        problems="${problems} ${dir} rule ${i} is not a Pass of remote networks to ${FEDERATION_NS} (${action}, ${sel:-no namespaceSelector});"
+      elif [[ "$(cidr_set <<<"$nets")" != "$ns_cidrs" ]]; then
+        problems="${problems} ${dir} rule ${i} passes [$(cidr_set <<<"$nets")];"
+      fi
+    done <<<"$lines"
+  done
+  if [[ " $tier_policies " != *" ${fed_policy} "* ]]; then
+    fail "tier assigns remote networks to ${FEDERATION_NS}" "policy ${fed_policy} not found: Application netpol-${FEDERATION_NS}-remote, built from the federation's mip-infrastructure/remote-networks.yaml"
+  elif [[ -z "$ns_cidrs" ]]; then
+    fail "tier assigns remote networks to ${FEDERATION_NS}" "NetworkPolicy controller-to-remote-workers lists no remote CIDR to compare with"
+  elif [[ -n "$problems" ]]; then
+    fail "tier assigns remote networks to ${FEDERATION_NS}" "${fed_policy}:${problems} the NetworkPolicies of ${FEDERATION_NS} allow [${ns_cidrs}]; remote-networks.yaml and submariner-policies/network-policy.yaml must agree"
+  else
+    pass "tier assigns remote networks to ${FEDERATION_NS}" "${ns_cidrs} (${fed_policy})"
+  fi
+  # Remote networks are passed to one component of the federation, the aggregation server. A Pass rule to
+  # anything else opens it to the remote nodes without a login; for the controller that means its whole API
+  # (list datasets, start computations).
+  other_targets="$(kc get globalnetworkpolicies.projectcalico.org "$fed_policy" -o jsonpath='{range .spec.ingress[?(@.action=="Pass")]}{.destination.selector}{" ports "}{.destination.ports}{"\n"}{end}' 2>/dev/null | grep -v "exaflow-aggregation-server" | sed '/^ ports $/d' | paste -sd';' -)"
+  if [[ " $tier_policies " != *" ${fed_policy} "* ]]; then
+    : # reported above
+  elif [[ -z "$other_targets" ]]; then
+    pass "remote nodes reach only the aggregation server" "${fed_policy} passes no other component"
+  else
+    fail "remote nodes reach only the aggregation server" "${fed_policy} also passes remote networks to: ${other_targets}; sync Application netpol-${FEDERATION_NS}-remote (chart common/security/remote-networks)"
+  fi
+  # The networks of every remote cluster this gateway knows must be in a Deny rule of the tier, in both directions;
+  # one that is missing reaches every namespace that has no policies of its own.
+  unconfined=""
+  for dir in ingress egress; do
+    denied="$(awk -F'|' -v d="$dir" '$2 == d && $3 == "Deny" {print $4}' <<<"$tier_rules" | cidr_set)"
+    for c in $remote_cidrs; do
+      [[ ",${denied}," == *",${c},"* ]] || unconfined="${unconfined} ${c}(${dir})"
+    done
+  done
+  if [[ -z "$remote_cidrs" ]]; then
+    warn "tier confines the remote networks" "no remote Endpoint known to this cluster, nothing to compare"
+  elif [[ -z "$unconfined" ]]; then
+    pass "tier confines the remote networks" "$(wc -w <<<"$remote_cidrs" | tr -d ' ') remote CIDRs denied in both directions"
+  else
+    fail "tier confines the remote networks" "in no Deny rule of the tier:${unconfined}; add the node's networks to its federation's remote-networks.yaml"
+  fi
+  # The former shared policy has a lower order: while it exists, it decides first.
+  if [[ " $tier_policies " == *" remote-clusters.confine-remote-clusters "* ]]; then
+    warn "obsolete policy confine-remote-clusters" "still present; it is evaluated first, so the federation policies have no effect. Once the checks above pass: kubectl delete globalnetworkpolicies.projectcalico.org remote-clusters.confine-remote-clusters"
+  fi
+fi
+for app in "netpol-${FEDERATION_NS}-hybrid" netpol-remote-clusters "netpol-${FEDERATION_NS}-remote" "${FEDERATION_NS}-submariner-network-policy" submariner-operator; do
   st="$(kc -n "$ARGOCD_NS" get application "$app" -o jsonpath='{.status.sync.status}/{.status.health.status}' 2>/dev/null)"
   if [[ "$st" == "Synced/Healthy" ]]; then
     pass "Application ${app}" "$st"
