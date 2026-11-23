@@ -10,12 +10,14 @@
 #     placeholder with the Submariner cluster ID) instead of the node name,
 #     which could collide with a central node name.
 #   - AGGREGATION_SERVER_DNS is the clusterset name exported by the central
-#     cluster; the service-link environment variables the template relies on do
-#     not exist across clusters. CONTROLLER_IP is kept because the worker's
-#     configuration expects the variable. Only the client of a Flower algorithm
-#     reads it, and the central cluster neither exports the controller nor admits
-#     its API from remote nodes, so Flower algorithms do not run on this worker.
+#     cluster; service-link variables do not exist across clusters.
+#     CONTROLLER_IP stays because the worker's configuration expects it. Only
+#     the client of a Flower algorithm reads it, and remote nodes cannot reach
+#     the controller, so Flower algorithms do not run on this worker.
 #   - /opt/csvs is a ConfigMap with the synthetic data model.
+#   - No service-account token is mounted. The worker never calls the Kubernetes
+#     API, and it runs analysis code sent by the federation, which must not hold
+#     a credential for this cluster.
 apiVersion: apps/v1
 kind: StatefulSet
 metadata:
@@ -38,6 +40,7 @@ spec:
         app: exaflow-worker
         nodeType: localworker
     spec:
+      automountServiceAccountToken: false
       volumes:
         - name: duckdb-data
           emptyDir: {}

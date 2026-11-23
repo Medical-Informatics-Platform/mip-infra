@@ -4,10 +4,12 @@
 #   ./preflight.sh                 install stage: OS, resources, egress, broker
 #                                  reachability, kernel modules, CIDR overlap
 #   ./preflight.sh --stage join    join stage: credential files, broker TLS and
-#                                  token, MicroK8s settings, gateway label, tool versions
+#                                  token, MicroK8s settings (authorization of the API server and
+#                                  of the kubelet, Calico tier access), gateway label, tool versions
 #   ./preflight.sh --stage health  joined node: connection to the central cluster and its
 #                                  address, gateway policy routing, networkd drop-in, route
-#                                  watchdog, IPsec firewall, worker export, clusterset DNS,
+#                                  watchdog, IPsec firewall, authorization of the API server and of
+#                                  the kubelet, Calico tier access, worker export, clusterset DNS,
 #                                  aggregation server reachable from the worker
 #
 # Prints one line per check (PASS, WARN or FAIL) and exits non-zero when any
@@ -29,7 +31,7 @@ STAGE=install
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --stage) STAGE="${2:-}"; shift 2 ;;
-    -h|--help) sed -n '2,24p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    -h|--help) sed -n '2,26p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
     *) echo "unknown argument: $1" >&2; exit 2 ;;
   esac
 done
@@ -74,6 +76,58 @@ check_route_watchdog() {
     pass "route watchdog" "unit submariner-route-watchdog"
   else
     fail "route watchdog" "re-run setup-microk8s.sh; without it the connection stays in error after a systemd-networkd restart until the route agent is restarted by hand"
+  fi
+}
+
+# The API server must authorize with RBAC. With the MicroK8s default, AlwaysAllow, the
+# service-account token of any pod has full control of the cluster and reads the broker token and
+# the IPsec PSK stored in it. The verdict comes from the running server: an authenticated identity
+# that no role is bound to must not read Secrets. The arguments file shows what the next restart
+# applies. The probe impersonates, which the MicroK8s admin kubeconfig may do.
+check_api_authorization() {
+  local mode answer
+  mode="$(sed -n 's/^--authorization-mode=//p' /var/snap/microk8s/current/args/kube-apiserver 2>/dev/null | tail -1)"
+  answer="$(kubectl auth can-i get secrets --namespace kube-system --as=preflight-rbac-probe 2>/dev/null)"
+  if [[ "$answer" == yes ]]; then
+    fail "API authorization" "mode ${mode:-unknown}: every authenticated request is allowed, any pod reads the Submariner credentials; run setup-microk8s.sh (enables RBAC, restarts the control plane once)"
+  elif [[ "$mode" == *AlwaysAllow* ]]; then
+    fail "API authorization" "the arguments file sets AlwaysAllow and the next restart applies it; run setup-microk8s.sh"
+  elif [[ "$answer" == no ]]; then
+    pass "API authorization" "${mode:-RBAC}; an identity without a role is refused"
+  else
+    warn "API authorization" "not verified: the probe needs the MicroK8s admin kubeconfig (mode ${mode:-not readable})"
+  fi
+}
+
+# The kubelet API on port 10250 accepts service-account tokens. Without --authorization-mode=Webhook
+# the kubelet allows every authenticated request, so a pod that reaches the port could run commands
+# in every container of the node, whatever the API server authorizes. The probe presents a
+# ten-minute token of an account that no role is bound to: 403 is the answer of a kubelet that
+# authorizes through the API server, 200 the answer of one that allows everything.
+check_kubelet_authorization() {
+  local mode token code=""
+  mode="$(sed -n 's/^--authorization-mode=//p' /var/snap/microk8s/current/args/kubelet 2>/dev/null | tail -1)"
+  token="$(kubectl create token default --namespace default --duration 10m 2>/dev/null)"
+  if [[ -n "$token" ]]; then
+    code="$(printf 'header = "Authorization: Bearer %s"\n' "$token" \
+      | curl -sk --max-time 8 -o /dev/null -w '%{http_code}' -K - https://127.0.0.1:10250/pods 2>/dev/null)"
+  fi
+  case "$code" in
+    403) pass "kubelet authorization" "${mode:-Webhook}; a token without a role is refused" ;;
+    200) fail "kubelet authorization" "mode ${mode:-unset}: the kubelet allows every authenticated request on port 10250, any service-account token can run commands in every pod; run setup-microk8s.sh (sets Webhook, restarts the control plane once)" ;;
+    *) warn "kubelet authorization" "not verified: HTTP ${code:-none} from the kubelet for the probe token (mode ${mode:-unset})" ;;
+  esac
+}
+
+# With RBAC the kube-controller-manager needs the right to read Calico tiers. Without it the Calico
+# API server refuses its informers for Calico policies, and the garbage collector and the quota
+# controller report a failed sync at every period. setup-microk8s.sh grants it (calico-tier-getter).
+check_tier_access() {
+  kubectl get tiers.projectcalico.org >/dev/null 2>&1 || return 0
+  if [[ "$(kubectl auth can-i get tiers.projectcalico.org --as=system:kube-controller-manager 2>/dev/null)" == yes ]]; then
+    pass "controller manager reads Calico tiers" "ClusterRole calico-tier-getter"
+  else
+    fail "controller manager reads Calico tiers" "refused: the garbage collector never completes a sync (journalctl -u snap.microk8s.daemon-kubelite); run setup-microk8s.sh"
   fi
 }
 
@@ -257,6 +311,9 @@ stage_join() {
     else
       fail "hostname pinned" "re-run setup-microk8s.sh; a boot under another instance name registers a second node and strands the gateway"
     fi
+    check_api_authorization
+    check_kubelet_authorization
+    check_tier_access
   else
     fail "kubectl reaches MicroK8s" "run 'newgrp microk8s' or check ~/.kube/config"
   fi
@@ -325,6 +382,9 @@ stage_health() {
   fi
   check_route_watchdog
   check_hub_firewall
+  check_api_authorization
+  check_kubelet_authorization
+  check_tier_access
   # The worker's export must be Ready, that is, published to the broker. Imports and DNS answer from
   # local copies when publishing fails, so the DNS check below does not detect it.
   exports="$(kubectl -n federation-z get serviceexports.multicluster.x-k8s.io \

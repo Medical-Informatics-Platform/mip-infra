@@ -1,11 +1,12 @@
 #!/usr/bin/env bash
 # Installs single-node MicroK8s with the pod and service CIDRs of this remote
-# node, installs the Calico API server that Submariner needs to manage IP
-# pools, pins Calico's node IP detection and MicroK8s' certificate handling so
-# that the Submariner tunnel interface does not disturb them, installs the
-# watchdog that restores the gateway's policy routing, limits IPsec to the
-# central gateway's LoadBalancer address, and labels the node as the Submariner
-# gateway.
+# node, turns on RBAC authorization in its API server and makes the kubelet
+# authorize through it, installs the Calico API server that Submariner needs to
+# manage IP pools, pins Calico's node IP detection and MicroK8s' certificate
+# handling so that the Submariner tunnel interface does not disturb them,
+# installs the watchdog that restores the gateway's policy routing, limits
+# IPsec to the central gateway's LoadBalancer address, and labels the node as
+# the Submariner gateway.
 #
 # Usage:
 #   sudo ./setup-microk8s.sh
@@ -25,7 +26,10 @@
 #
 # Re-running is safe. When MicroK8s is already installed the script verifies the
 # channel and the live CIDRs instead of reinstalling. CIDRs cannot change after
-# installation without `snap remove --purge microk8s`.
+# installation without `snap remove --purge microk8s`. On an installation whose
+# API server or kubelet still allows every authenticated request, the script
+# enables RBAC and the kubelet's Webhook mode, which restarts the control plane
+# once (section "API and kubelet authorization").
 set -euo pipefail
 
 MICROK8S_CHANNEL="${MICROK8S_CHANNEL:-1.33/stable}"
@@ -39,6 +43,10 @@ here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 CENTRAL_GATEWAY_IP="${CENTRAL_GATEWAY_IP:-$(sed -n 's/^CENTRAL_GATEWAY_IP=//p' "${here}/central.env" 2>/dev/null | head -1)}"
 WAIT_TIMEOUT="${WAIT_TIMEOUT:-600}"
 LAUNCH_CONFIG=/var/snap/microk8s/common/.microk8s.yaml
+APISERVER_ARGS=/var/snap/microk8s/current/args/kube-apiserver
+KUBELET_ARGS=/var/snap/microk8s/current/args/kubelet
+KUBELET_KUBECONFIG=/var/snap/microk8s/current/credentials/kubelet.config
+KUBELET_CLIENT_CERT=/var/snap/microk8s/current/certs/apiserver-kubelet-client.crt
 CNI_MANIFEST=/var/snap/microk8s/current/args/cni-network/cni.yaml
 NO_REISSUE_LOCK=/var/snap/microk8s/current/var/lock/no-cert-reissue
 
@@ -104,6 +112,10 @@ else
   cat >"$LAUNCH_CONFIG" <<EOF
 ---
 version: 0.2.0
+extraKubeAPIServerArgs:
+  --authorization-mode: RBAC,Node
+extraKubeletArgs:
+  --authorization-mode: Webhook
 extraCNIEnv:
   IPv4_CLUSTER_CIDR: "${IPv4_CLUSTER_CIDR}"
   IPv4_SERVICE_CIDR: "${IPv4_SERVICE_CIDR}"
@@ -118,11 +130,113 @@ EOF
   microk8s status --wait-ready --timeout "$WAIT_TIMEOUT" >/dev/null
 fi
 
+# --- API and kubelet authorization -------------------------------------------
+# MicroK8s starts its API server with --authorization-mode=AlwaysAllow: every
+# authenticated request is allowed, so the service-account token of any pod has
+# full control of the cluster and reads the broker token and the IPsec PSK that
+# the join stores in it (Helm release Secret, Submariner resource). A new
+# installation gets RBAC,Node from the launch configuration above. An existing
+# one is switched here by the rbac add-on, which sets the same argument and
+# restarts the control plane once: the API does not answer for about a minute,
+# while the pods, the tunnel and cluster DNS keep running.
+#
+# One role is missing and is added below with the Calico API server
+# (calico-tier-getter, for the kube-controller-manager). Nothing else needs to be
+# granted: the Submariner chart, Calico, the Calico API server and CoreDNS ship
+# the roles of their service accounts, and Kubernetes creates its default roles
+# when it first starts with RBAC. The MicroK8s admin kubeconfig is a certificate
+# in the group system:masters, which RBAC does not restrict: kubectl, helm,
+# subctl and the route watchdog below keep their access.
+#
+# The kubelet has the same default for its own API on port 10250. Without
+# --authorization-mode=Webhook it allows every authenticated request, and it
+# accepts service-account tokens: a pod that reaches the port could run commands
+# in every container of the node, the gateway included, even with RBAC on the
+# API server. With Webhook the kubelet asks the API server, where RBAC decides.
+# The API server itself reads logs and runs exec through the kubelet with a
+# certificate in system:masters. The launch configuration sets the argument on
+# a new installation; on an existing one it is written to the kubelet arguments
+# here, and the restart that enables RBAC applies it as well.
+authz_mode() { sed -n 's/^--authorization-mode=//p' "$APISERVER_ARGS" 2>/dev/null | tail -1; }
+kubelet_authz_mode() { sed -n 's/^--authorization-mode=//p' "$KUBELET_ARGS" 2>/dev/null | tail -1; }
+# Answer of the running API server for an authenticated identity that no role is bound to.
+unbound_identity_reads_secrets() {
+  k auth can-i get secrets --namespace kube-system --as=setup-microk8s-rbac-probe 2>/dev/null || true
+}
+# HTTP status the running kubelet gives a service-account token that no role is bound to: 403 when
+# it authorizes through the API server, 200 when it allows everything. The token lasts ten minutes.
+kubelet_status_for_unbound_token() {
+  local token
+  token="$(k create token default --namespace default --duration 10m 2>/dev/null || true)"
+  [[ -n "$token" ]] || return 0
+  printf 'header = "Authorization: Bearer %s"\n' "$token" \
+    | curl -sk --max-time 10 -o /dev/null -w '%{http_code}' -K - https://127.0.0.1:10250/pods 2>/dev/null || true
+}
+need_rbac=false
+need_webhook=false
+[[ ",$(authz_mode)," == *,RBAC,* ]] || need_rbac=true
+[[ "$(kubelet_authz_mode)" == Webhook ]] || need_webhook=true
+# Both conditions are checked before anything is changed.
+if [[ "$need_rbac" == true ]]; then
+  # With the Node authorizer the kubelet reads the Secrets and ConfigMaps of its pods only under
+  # the node name of its certificate, issued for the host name at installation. A node that was
+  # renamed since would stop mounting them.
+  kubelet_user="$(/snap/microk8s/current/kubectl --kubeconfig="$KUBELET_KUBECONFIG" auth whoami \
+    -o jsonpath='{.status.userInfo.username}' 2>/dev/null || true)"
+  registered_node="$(k get nodes -o jsonpath='{.items[0].metadata.name}')"
+  [[ -n "$kubelet_user" ]] || die "could not read the identity of the kubelet (${KUBELET_KUBECONFIG}); RBAC not enabled"
+  [[ "$kubelet_user" == "system:node:${registered_node}" ]] \
+    || die "the kubelet authenticates as '${kubelet_user}' but the node is registered as '${registered_node}'; restore the host name (README, Troubleshooting) before RBAC is enabled"
+fi
+if [[ "$need_webhook" == true ]]; then
+  # With Webhook the kubelet authorizes the API server too. Its client certificate for the
+  # kubelet must be in system:masters, or kubectl logs and exec would be refused.
+  client_subject="$(openssl x509 -in "$KUBELET_CLIENT_CERT" -noout -subject 2>/dev/null || true)"
+  if ! grep -q -- '^--kubelet-client-certificate=' "$APISERVER_ARGS" || [[ "$client_subject" != *system:masters* ]]; then
+    die "the API server has no kubelet client certificate in the group system:masters (${KUBELET_CLIENT_CERT}); kubelet authorization not changed"
+  fi
+  was="$(kubelet_authz_mode)"
+  log "Setting the kubelet authorization mode to Webhook (was ${was:-unset, the kubelet then allows every authenticated request})"
+  if grep -q '^--authorization-mode=' "$KUBELET_ARGS"; then
+    sed -i 's|^--authorization-mode=.*|--authorization-mode=Webhook|' "$KUBELET_ARGS"
+  else
+    [[ -z "$(tail -c1 "$KUBELET_ARGS")" ]] || echo >>"$KUBELET_ARGS"
+    printf '%s\n' '--authorization-mode=Webhook' >>"$KUBELET_ARGS"
+  fi
+fi
+if [[ "$need_rbac" == true ]]; then
+  was="$(authz_mode)"
+  log "Enabling RBAC authorization (was ${was:-unset}); the control plane restarts once"
+  microk8s enable rbac
+elif [[ "$need_webhook" == true ]]; then
+  log "Restarting the control plane once to apply the kubelet setting"
+  snap restart microk8s.daemon-kubelite
+fi
+if [[ "$need_rbac" == true || "$need_webhook" == true ]]; then
+  microk8s status --wait-ready --timeout "$WAIT_TIMEOUT" >/dev/null
+fi
+api_answer=""
+kubelet_answer=""
+for _ in $(seq 1 36); do
+  api_answer="$(unbound_identity_reads_secrets)"
+  kubelet_answer="$(kubelet_status_for_unbound_token)"
+  [[ "$api_answer" == no && "$kubelet_answer" == 403 ]] && break
+  sleep 5
+done
+[[ "$api_answer" == no ]] \
+  || die "the API server still allows a request RBAC must refuse (${APISERVER_ARGS}: --authorization-mode=$(authz_mode)); restart it with 'snap restart microk8s.daemon-kubelite' and run this script again"
+[[ "$kubelet_answer" == 403 ]] \
+  || die "the kubelet gave HTTP status '${kubelet_answer:-none}' to a token without a role, expected 403 (${KUBELET_ARGS}: --authorization-mode=$(kubelet_authz_mode)); restart it with 'snap restart microk8s.daemon-kubelite' and run this script again"
+log "API authorization: $(authz_mode); kubelet authorization: $(kubelet_authz_mode)"
+
 log "Waiting for Calico and CoreDNS"
 wait_for kube-system ds/calico-node
 k -n kube-system rollout status ds/calico-node --timeout=300s
 wait_for kube-system deploy/coredns
 k -n kube-system rollout status deploy/coredns --timeout=300s
+# The API server reads container logs through the kubelet API, which now authorizes it.
+k -n kube-system logs ds/calico-node -c calico-node --tail=1 >/dev/null 2>&1 \
+  || die "the API server cannot read container logs through the kubelet; check ${KUBELET_CLIENT_CERT} and 'journalctl -u snap.microk8s.daemon-kubelite'"
 
 # --- coexistence with the Submariner tunnel interface -------------------------
 # At join time the route agent adds a vx-submariner interface with an address
@@ -210,6 +324,42 @@ if [[ "$CALICO_APISERVER" == true ]]; then
     sleep 5
   done
   [[ "$available" == True ]] || die "APIService v3.projectcalico.org is not Available"
+
+  # The Calico API server answers a request for policies only when the caller may also read their
+  # tier. The kube-controller-manager lists every resource for garbage collection and quotas but
+  # has no such right: with RBAC its informers for the projectcalico.org policies are refused and
+  # never sync, and the garbage collector and the quota controller report a failed sync at every
+  # period. Calico's manifests grant the right from a later 3.29 release on
+  # (templates/tier-getter.yaml); MicroK8s 1.33 ships 3.29.3 without it. The objects carry the
+  # upstream names, so a newer manifest takes them over.
+  if k get tiers.projectcalico.org >/dev/null 2>&1; then
+    k apply -f - >/dev/null <<'TIERS'
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: calico-tier-getter
+rules:
+  - apiGroups: [projectcalico.org]
+    resources: [tiers]
+    verbs: [get]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: calico-tier-getter
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: calico-tier-getter
+subjects:
+  - apiGroup: rbac.authorization.k8s.io
+    kind: User
+    name: system:kube-controller-manager
+TIERS
+    [[ "$(k auth can-i get tiers.projectcalico.org --as=system:kube-controller-manager 2>/dev/null || true)" == yes ]] \
+      || die "the kube-controller-manager may not read Calico tiers although calico-tier-getter was applied"
+    log "The kube-controller-manager may read Calico tiers (ClusterRole calico-tier-getter)"
+  fi
 fi
 
 # --- hostname stability --------------------------------------------------------
@@ -259,7 +409,7 @@ fi
 #
 # It runs without root and without capabilities: reading the routing tables
 # needs none, and its API access is the MicroK8s admin kubeconfig, which the
-# MicroK8s group may read. It opens no port.
+# MicroK8s group may read and which RBAC does not restrict. It opens no port.
 watchdog_bin=/usr/local/sbin/submariner-route-watchdog
 watchdog_unit=/etc/systemd/system/submariner-route-watchdog.service
 watchdog_kubeconfig=/var/snap/microk8s/current/credentials/client.config
@@ -458,6 +608,7 @@ MicroK8s is ready.
   Node:          ${node_name}
   Pod CIDR:      ${IPv4_CLUSTER_CIDR}
   Service CIDR:  ${IPv4_SERVICE_CIDR}
+  Authorization: API server $(authz_mode), kubelet $(kubelet_authz_mode)
   IPsec peer:    ${CENTRAL_GATEWAY_IP} only
   Route watchdog: $(systemctl is-active submariner-route-watchdog.service 2>/dev/null || echo inactive)
   Calico:        ${CALICO_VERSION:-not installed}
