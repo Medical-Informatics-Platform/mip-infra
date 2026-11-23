@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# Health checks of the central cluster before a remote node joins (read-only).
+# Health checks of the central cluster before a remote node joins. Nothing is written: the checks read, and
+# the admission checks are server-side dry runs.
 #
 # Run with a kubectl context that reads the central cluster. Prints one PASS,
 # WARN or FAIL line per check and exits non-zero when a check fails.
@@ -11,12 +12,15 @@
 # cluster, PSK and broker credentials, no Secrets in the broker namespace, the
 # clusterset.local forward in the cluster CoreDNS, the Lighthouse export
 # records and the published address of every ServiceExport of the federation,
-# per-remote admission policies, the federation's NetworkPolicies, the
-# remote-clusters tier (the federation's policy passes its remote networks only
-# to the namespace of FEDERATION_NS and there only to the aggregation server,
-# every connected remote network is denied elsewhere, the tier ends with a
-# Pass), the policy Applications, the API server egress pins of the
-# network-policy charts (apiServer.cidrs), and subctl (when installed).
+# per-remote admission policies, the enrollment record of every remote account,
+# what each remote cluster publishes on the broker against its record, the
+# admission policies as the API server applies them to every enrolled account
+# (verify-enrollment.sh, impersonating the account), the federation's
+# NetworkPolicies, the remote-clusters tier (the federation's policy passes its
+# remote networks only to the namespace of FEDERATION_NS and there only to the
+# aggregation server, every connected remote network is denied elsewhere, the
+# tier ends with a Pass), the policy Applications, the API server egress pins
+# of the network-policy charts (apiServer.cidrs), and subctl (when installed).
 #
 # Parameters (environment variables or key=value arguments):
 #   FEDERATION_NS      default federation-z
@@ -33,7 +37,7 @@ set -uo pipefail
 for arg in "$@"; do
   case "$arg" in
     *=*) export "${arg?}" ;;
-    -h|--help) sed -n '2,27p' "$0"; exit 0 ;;
+    -h|--help) sed -n '2,31p' "$0"; exit 0 ;;
     *) printf 'ERROR: unknown argument %s (use KEY=value)\n' "$arg" >&2; exit 2 ;;
   esac
 done
@@ -275,7 +279,7 @@ fi
 # --- per-remote identities -------------------------------------------------------------------------------------
 kc -n "$BROKER_NS" get role submariner-remote-cluster >/dev/null 2>&1 \
   && pass "Role submariner-remote-cluster" || fail "Role submariner-remote-cluster" "apply base/mip-infrastructure/rbac/submariner-remote-admission.yaml"
-for p in submariner-remote-cluster-ownership submariner-remote-cluster-subnets; do
+for p in submariner-remote-cluster-ownership submariner-remote-cluster-subnets submariner-remote-cluster-exports; do
   if kc get validatingadmissionpolicy "$p" >/dev/null 2>&1 && kc get validatingadmissionpolicybinding "$p" >/dev/null 2>&1; then
     pass "admission policy ${p#submariner-remote-cluster-}" "policy and binding present"
   else
@@ -284,6 +288,77 @@ for p in submariner-remote-cluster-ownership submariner-remote-cluster-subnets; 
 done
 enrolled="$(kc -n "$BROKER_NS" get serviceaccounts -l submariner.io/remote-enrollment=true -o jsonpath='{range .items[*]}{.metadata.name}{" "}{end}' 2>/dev/null)"
 [[ -n "${enrolled// /}" ]] && pass "enrolled remote accounts" "$enrolled" || warn "enrolled remote accounts" "none (enroll-remote.sh)"
+# Enrollment records: ConfigMap cluster-<id>, the parameter of the subnet and export policies. An account
+# without a record is not restricted by the export policy while other records exist. A record without an
+# exports entry lets the cluster publish nothing.
+records="$(kc -n "$BROKER_NS" get configmaps -l submariner.io/remote-enrollment=true -o jsonpath='{range .items[*]}{.metadata.name}{"="}{.data.exports}{"\n"}{end}' 2>/dev/null | tr -d ' \t')"
+record_exports() { awk -F= -v n="$1" '$1 == n {print $2}' <<<"$records"; } # $1 ConfigMap name
+no_record=""
+no_exports=""
+record_list=""
+for sa in $enrolled; do
+  if ! grep -q "^${sa}=" <<<"$records"; then
+    no_record="${no_record} ${sa}"
+  elif [[ -z "$(record_exports "$sa")" ]]; then
+    no_exports="${no_exports} ${sa}"
+  else
+    record_list="${record_list} ${sa}=[$(record_exports "$sa")]"
+  fi
+done
+if [[ -n "${enrolled// /}" ]]; then
+  if [[ -n "$no_record" ]]; then
+    fail "enrollment records" "no ConfigMap labelled submariner.io/remote-enrollment=true for:${no_record}; the export and subnet policies do not restrict these accounts. Re-run enroll-remote.sh CLUSTER_ID=<id> with the node's SUBNETS and EXPORTS, or revoke the account"
+  elif [[ -n "$no_exports" ]]; then
+    warn "enrollment records" "no export recorded for:${no_exports}; the broker refuses every service these clusters publish. kubectl -n ${BROKER_NS} patch configmap <name> --type merge -p '{\"data\":{\"exports\":\"<namespace>/<service>\"}}'"
+  else
+    pass "enrollment records" "${record_list# }"
+  fi
+fi
+# What each remote cluster publishes on the broker must be within its record: the EndpointSlices and the
+# per-cluster ServiceImports labelled with its ID, and the aggregated ServiceImports that list it. The export
+# policy refuses any other create or update; this check also finds objects written before the policy existed.
+published="$(
+  kc -n "$BROKER_NS" get endpointslices.discovery.k8s.io -o jsonpath='{range .items[*]}{.metadata.labels.multicluster\.kubernetes\.io/source-cluster}{" "}{.metadata.labels.lighthouse\.submariner\.io/sourceNamespace}{"/"}{.metadata.labels.multicluster\.kubernetes\.io/service-name}{" EndpointSlice/"}{.metadata.name}{"\n"}{end}' 2>/dev/null | awk 'NF == 3'
+  kc -n "$BROKER_NS" get serviceimports.multicluster.x-k8s.io -o jsonpath='{range .items[*]}{.metadata.labels.multicluster\.kubernetes\.io/source-cluster}{" "}{.metadata.labels.lighthouse\.submariner\.io/sourceNamespace}{"/"}{.metadata.labels.multicluster\.kubernetes\.io/service-name}{" ServiceImport/"}{.metadata.name}{"\n"}{end}' 2>/dev/null | awk 'NF == 3'
+  kc -n "$BROKER_NS" get serviceimports.multicluster.x-k8s.io -o jsonpath='{range .items[*]}{.metadata.annotations.lighthouse\.submariner\.io/sourceNamespace}{"/"}{.metadata.annotations.multicluster\.kubernetes\.io/service-name}{" ServiceImport/"}{.metadata.name}{" "}{.status.clusters[*].cluster}{"\n"}{end}' 2>/dev/null \
+    | awk '$1 != "/" {for (i = 3; i <= NF; i++) print $i, $1, $2}'
+)"
+outside=""
+remote_objects=0
+while read -r cluster export object; do
+  [[ -n "$cluster" && "$cluster" != "$local_id" ]] || continue
+  remote_objects=$((remote_objects + 1))
+  if [[ "$export" == /* || "$export" == */ ]]; then
+    outside="${outside} ${object} of ${cluster} carries no service name or source namespace;"
+  elif [[ ",$(record_exports "cluster-${cluster}")," != *",${export},"* ]]; then
+    outside="${outside} ${object} of ${cluster} publishes ${export};"
+  fi
+done <<<"$published"
+if [[ -z "$local_id" ]]; then
+  warn "published exports within the records" "cluster ID unknown, not checked"
+elif [[ -n "$outside" ]]; then
+  fail "published exports within the records" "${outside# } the export policy refuses every update of these objects. If the cluster may publish the service, add it to the exports of its record (ConfigMap cluster-<id> in ${BROKER_NS}); otherwise delete the object"
+else
+  pass "published exports within the records" "${remote_objects} broker objects of remote clusters"
+fi
+# The policies as the API server applies them now. verify-enrollment.sh impersonates each enrolled account and
+# sends server-side dry runs: objects within the record must be admitted, anything else refused. A failure
+# with a correct record means the API server does not see the record (note on parameter ConfigMaps in
+# submariner-remote-admission.yaml).
+verify="$(dirname "$0")/verify-enrollment.sh"
+for sa in $enrolled; do
+  grep -q "^${sa}=" <<<"$records" || continue
+  out="$(env -u SUBNETS -u EXPORTS -u OUT_DIR -u TOKEN_FILE -u CA_FILE "$verify" CLUSTER_ID="${sa#cluster-}" IMPERSONATE=true BROKER_NS="$BROKER_NS" 2>&1)"
+  if grep -q '^RESULT: all checks passed' <<<"$out"; then
+    pass "admission checks for ${sa}" "$(grep -c '^PASS' <<<"$out") passed"
+  elif grep -q 'cannot impersonate' <<<"$out"; then
+    warn "admission checks for ${sa}" "not run: the current context may not impersonate the account"
+  else
+    reason="$(grep -m1 '^FAIL' <<<"$out" | sed 's/^FAIL *//' | tr -s ' ' | cut -c1-180)"
+    [[ -n "$reason" ]] || reason="verify-enrollment.sh ended without a result, last line: $(sed '/^$/d' <<<"$out" | tail -n1 | cut -c1-160)"
+    fail "admission checks for ${sa}" "${reason}; details: ./verify-enrollment.sh CLUSTER_ID=${sa#cluster-} IMPERSONATE=true"
+  fi
+done
 
 # --- federation namespace and policies -------------------------------------------------------------------------
 pols="$(kc -n "$FEDERATION_NS" get networkpolicy -o jsonpath='{range .items[*]}{.metadata.name}{" "}{end}' 2>/dev/null)"

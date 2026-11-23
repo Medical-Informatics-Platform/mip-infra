@@ -9,6 +9,8 @@
 #      - a cluster-<id> account may only create, update or delete broker objects that belong to <id>
 #   4. ValidatingAdmissionPolicy/Binding submariner-remote-cluster-subnets (parameterised by ConfigMaps)
 #      - Endpoint spec.subnets must stay within the subnets recorded at enrollment
+#   5. ValidatingAdmissionPolicy/Binding submariner-remote-cluster-exports (parameterised by the same ConfigMaps)
+#      - a cluster-<id> account may only publish the services recorded at enrollment
 #
 # Naming: the ServiceAccount of a remote is cluster-<clusterID> in submariner-k8s-broker. This is the
 # name the operator itself expects (submariner-operator pkg/names/names.go: ForClusterSA = "cluster-" + id)
@@ -378,6 +380,13 @@ spec:
 # submariner.io/remote-enrollment: "true", data.subnets: comma-separated CIDRs). Kept separate from the
 # ownership policy on purpose: a policy with paramRef and parameterNotFoundAction Allow is skipped entirely
 # when no parameter matches, which must never happen to the ownership rules.
+#
+# Change this policy and the export policy below with kubectl apply only, and keep the binding of at least one
+# of them at all times. Before Kubernetes 1.38 the API server stops the informer that reads ConfigMap
+# parameters as soon as no bound policy uses them, and never starts it again (kubernetes/kubernetes pull
+# request 141015, merged for 1.38). Enrollment records created or changed after that are ignored, without any
+# error, until every API server has restarted. verify-enrollment.sh shows the condition: a service outside the
+# record is then admitted, or an export added to a record is refused.
 apiVersion: admissionregistration.k8s.io/v1
 kind: ValidatingAdmissionPolicy
 metadata:
@@ -446,6 +455,132 @@ spec:
     # No enrollment ConfigMap at all: nothing to pin, the request passes this policy (ownership is still
     # enforced by submariner-remote-cluster-ownership). With Deny an empty selection would reject instead.
     parameterNotFoundAction: Allow
+  matchResources:
+    namespaceSelector:
+      matchLabels:
+        kubernetes.io/metadata.name: submariner-k8s-broker
+---
+# Export pinning. Parameters are the same enrollment ConfigMaps (data.exports: comma-separated
+# <namespace>/<service> entries, the services the remote may publish to the clusterset). The ownership policy
+# checks who writes a Lighthouse object; this one checks which service the object publishes. Without it an
+# enrolled cluster can add itself to the clusterset name of any service in any namespace of the other
+# clusters, for example to the worker service of another federation.
+#
+# What identifies the published service (lighthouse pkg/agent/controller, 0.25.0):
+#   EndpointSlice, per-cluster ServiceImport - labels lighthouse.submariner.io/sourceNamespace and
+#                                              multicluster.kubernetes.io/service-name
+#   aggregated ServiceImport                 - annotations with the same two keys
+# Every identity an object carries, as labels or as annotations, must be enrolled. An EndpointSlice must carry
+# the labels, because the importing clusters read them; a ServiceImport must carry at least one identity.
+#
+# Stricter than the subnet policy: a ConfigMap without an exports entry allows no export, and with no
+# enrollment ConfigMap at all every export of a remote account is refused (parameterNotFoundAction Deny).
+# One case is not covered: an account bound to the Role whose own ConfigMap is missing while others exist
+# passes this policy. enroll-remote.sh creates the ConfigMap before the RoleBinding, revoke-remote.sh deletes
+# it last, and check-central.sh reports an enrolled account without one.
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata:
+  name: submariner-remote-cluster-exports
+spec:
+  failurePolicy: Fail
+  paramKind:
+    apiVersion: v1
+    kind: ConfigMap
+  matchConstraints:
+    matchPolicy: Equivalent
+    namespaceSelector:
+      matchLabels:
+        kubernetes.io/metadata.name: submariner-k8s-broker
+    resourceRules:
+      - apiGroups: [discovery.k8s.io]
+        apiVersions: [v1]
+        operations: [CREATE, UPDATE]
+        resources: [endpointslices]
+      # serviceimports/status: the Lighthouse agent adds its cluster to status.clusters of an aggregated
+      # ServiceImport through the status subresource. On such a request object is the complete object.
+      - apiGroups: [multicluster.x-k8s.io]
+        apiVersions: [v1alpha1, v1beta1]
+        operations: [CREATE, UPDATE]
+        resources: [serviceimports, serviceimports/status]
+  matchConditions:
+    - name: caller-is-remote-cluster-account
+      expression: >-
+        request.userInfo.username.startsWith('system:serviceaccount:submariner-k8s-broker:cluster-')
+  variables:
+    - name: callerID
+      expression: request.userInfo.username.substring(52)
+    # With a selector every matching ConfigMap is evaluated once; the request is admitted only if all
+    # evaluations pass. This variable makes evaluations against other clusters' ConfigMaps pass.
+    - name: paramIsCaller
+      expression: params.metadata.name == 'cluster-' + variables.callerID
+    - name: allowedExports
+      expression: >-
+        has(params.data) && 'exports' in params.data
+        ? params.data['exports'].split(',').map(s, s.trim()).filter(s, s != '') :
+        []
+    - name: isEndpointSlice
+      expression: request.resource.group == 'discovery.k8s.io'
+    - name: labels
+      expression: 'has(object.metadata.labels) ? object.metadata.labels : {}'
+    - name: annotations
+      expression: 'has(object.metadata.annotations) ? object.metadata.annotations : {}'
+    - name: namespaceKey
+      expression: "'lighthouse.submariner.io/sourceNamespace'"
+    - name: serviceKey
+      expression: "'multicluster.kubernetes.io/service-name'"
+    - name: hasLabelIdentity
+      expression: >-
+        variables.namespaceKey in variables.labels || variables.serviceKey in variables.labels
+    - name: hasAnnotationIdentity
+      expression: >-
+        variables.namespaceKey in variables.annotations || variables.serviceKey in variables.annotations
+    # <namespace>/<service> as the object states it; a missing half stays empty and matches no entry.
+    - name: labelExport
+      expression: >-
+        (variables.namespaceKey in variables.labels ? variables.labels[variables.namespaceKey] : '')
+        + '/' + (variables.serviceKey in variables.labels ? variables.labels[variables.serviceKey] : '')
+    - name: annotationExport
+      expression: >-
+        (variables.namespaceKey in variables.annotations ? variables.annotations[variables.namespaceKey] : '')
+        + '/' + (variables.serviceKey in variables.annotations ? variables.annotations[variables.serviceKey] : '')
+    - name: labelExportAllowed
+      expression: '!variables.hasLabelIdentity || variables.labelExport in variables.allowedExports'
+    - name: annotationExportAllowed
+      expression: >-
+        !variables.hasAnnotationIdentity || variables.annotationExport in variables.allowedExports
+  validations:
+    - expression: >-
+        !variables.paramIsCaller
+        || ((variables.isEndpointSlice
+               ? variables.hasLabelIdentity
+               : (variables.hasLabelIdentity || variables.hasAnnotationIdentity))
+            && variables.labelExportAllowed
+            && variables.annotationExportAllowed)
+      message: the object publishes a service that is not in the exports recorded for the
+        calling cluster at enrollment
+      messageExpression: >-
+        'cluster ' + variables.callerID + ' may not publish '
+        + (!variables.labelExportAllowed ? variables.labelExport
+            : (!variables.annotationExportAllowed ? variables.annotationExport
+                : 'an object without service name and source namespace'))
+        + '; exports recorded at enrollment: [' + variables.allowedExports.join(', ') + ']'
+      reason: Forbidden
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicyBinding
+metadata:
+  name: submariner-remote-cluster-exports
+spec:
+  policyName: submariner-remote-cluster-exports
+  validationActions: [Deny]
+  paramRef:
+    namespace: submariner-k8s-broker
+    selector:
+      matchLabels:
+        submariner.io/remote-enrollment: 'true'
+    # No enrollment ConfigMap at all: no remote account may publish a service.
+    parameterNotFoundAction: Deny
   matchResources:
     namespaceSelector:
       matchLabels:

@@ -30,6 +30,7 @@ Only the remote node initiates the IPsec tunnel to the central gateway (`natEnab
 | `CENTRAL_GATEWAY_IP` | from `central.env` | `setup-microk8s.sh`, `preflight.sh` | The central gateway's LoadBalancer address, the only IPsec peer the node accepts. Must equal the address pinned on the central cluster (`common/submariner/operator/kustomization.yaml`) and the one in the hardening inventory |
 | Cluster ID | `rn-<8 hex>`, chosen at enrollment | `enroll-remote.sh`, `join-submariner.sh`, `deploy-worker.sh` | Name suffix of the broker account `cluster-<id>`; travels in `cluster-id.txt`. Record it, with the token expiry and the site, in the internal mapping; it is not stored in this repository |
 | `TOKEN_DURATION` | `8760h` | `enroll-remote.sh` | Lifetime of the bound token; re-enroll and re-join before it ends |
+| `EXPORTS` | `federation-z/exareme2-test-workers-service` | `enroll-remote.sh` | Services the node may publish to the clusterset, as comma-separated `<namespace>/<service>`; the default is read from `exaflow-worker/serviceexport.yaml`. The broker refuses every other export of the node |
 | `broker.server` | value in `submariner-values.yaml` | `join-submariner.sh`, `preflight.sh` | Central API server `<broker-api-host>:6443`; the only real endpoint in this directory |
 
 Changing the CIDRs after installation requires `snap remove --purge microk8s` and a new enrollment (the CIDRs are pinned per account); changing the cluster ID requires the removal procedure below.
@@ -62,7 +63,7 @@ The script removes the microk8s snap and its data, old helm and kubectl snaps (M
 
 ## 1) Enroll the node on the central cluster
 
-Enrollment creates the node's broker account `cluster-<id>`, binds it to the Role `submariner-remote-cluster`, records the node's CIDRs for the subnet policy, issues a bound token and collects the broker CA and the IPsec PSK. Run it on a machine with cluster-admin `kubectl` for the central cluster:
+Enrollment creates the node's broker account `cluster-<id>`, binds it to the Role `submariner-remote-cluster`, records the node's CIDRs for the subnet policy and the service it may publish for the export policy, issues a bound token and collects the broker CA and the IPsec PSK. Run it on a machine with cluster-admin `kubectl` for the central cluster:
 
 ```bash
 cd deployments/hybrid/federations/federation-Z/enrollment
@@ -70,7 +71,7 @@ cd deployments/hybrid/federations/federation-Z/enrollment
 ./verify-enrollment.sh OUT_DIR=~/subm-creds
 ```
 
-`enroll-remote.sh` prints the cluster ID and the token expiry; record both with the site in the internal mapping. Pass `CLUSTER_ID=<id>` to re-enroll or rotate an existing node; a run without it creates a new account every time (revoke unused ones with `revoke-remote.sh`). `verify-enrollment.sh` uses only the issued token: it must be able to create its own broker objects (server-side dry run), must be denied for another cluster's ID and for subnets outside the enrolled list, and must be forbidden to read secrets. From a machine that reaches the API server through the SSH SOCKS tunnel of `docs/remote-access.md`, the script picks `socks5://127.0.0.1:1080` up on its own; `PROXY_URL` overrides it.
+`enroll-remote.sh` prints the cluster ID and the token expiry; record both with the site in the internal mapping. Pass `CLUSTER_ID=<id>` to re-enroll or rotate an existing node, with the same `SUBNETS` and `EXPORTS` as before: a re-run rewrites the record, and the script warns when the record changes. A run without `CLUSTER_ID` creates a new account every time (revoke unused ones with `revoke-remote.sh`). By default the record allows one export, the worker Service of `exaflow-worker/serviceexport.yaml`; `EXPORTS=<namespace>/<service>,...` sets another list. `verify-enrollment.sh` uses only the issued token: it must be able to create its own broker objects (server-side dry run), must be denied for another cluster's ID, for subnets outside the enrolled list and for a service outside the enrolled exports, and must be forbidden to read secrets. From a machine that reaches the API server through the SSH SOCKS tunnel of `docs/remote-access.md`, the script picks `socks5://127.0.0.1:1080` up on its own; `PROXY_URL` overrides it.
 
 The output directory holds:
 
@@ -80,7 +81,7 @@ The output directory holds:
 | `broker-token.txt` | bound token of `cluster-<id>`, plain | `broker.token` (the chart writes it unchanged into the `Submariner` resource) |
 | `broker-ca-base64.txt` | broker CA, base64 | `broker.ca` (a base64 string; the components decode it themselves) |
 | `broker-psk.txt` | `.data.psk` of `submariner-ipsec-psk` as stored (base64) | `ipsec.psk`. The central gateway mounts the PSK secret and base64-encodes the bytes before use; the Helm value is used as is, so both sides agree only on the stored string |
-| `broker-ca.crt`, `broker-url.txt`, `token-expiry.txt` | PEM CA, API URL, expiry | used by `verify-enrollment.sh` and for the record |
+| `broker-ca.crt`, `broker-url.txt`, `subnets.txt`, `exports.txt`, `token-expiry.txt` | PEM CA, API URL, recorded subnets and exports, expiry | used by `verify-enrollment.sh` and for the record |
 
 Transfer the files to the node over SSH and remove the local copies once the join is verified:
 
@@ -193,6 +194,12 @@ If the gateway log on the node reports the broker refusing an Endpoint or Cluste
 
 Export a throwaway service from the node and reach it from the central cluster. The cluster-wide deny stops any pod outside the allowed components from reaching remote addresses, so the fetch runs from the federation-z controller pod, which is allowed to dial remote pods on 5672 only; the smoke test therefore checks resolution from a throwaway pod and the TCP path from the controller with the exact port the policy allows.
 
+The broker accepts only the exports in the node's enrollment record. On the central cluster, add the test Service to the record first; the list replaces the recorded one, so keep the worker Service in it:
+
+```bash
+kubectl -n submariner-k8s-broker patch configmap cluster-<id> --type merge -p '{"data":{"exports":"federation-z/exareme2-test-workers-service,submariner-smoke/smoke-nginx"}}'
+```
+
 On the node:
 
 ```bash
@@ -213,11 +220,12 @@ kubectl -n federation-z exec deploy/exaflow-controller-deployment -- \
   python -c 'import socket,sys; s=socket.create_connection((sys.argv[1],5672),5); print("tcp 5672 open")' <remote worker pod IP>   # after step 8
 ```
 
-Expected: the name resolves, the fetch from an arbitrary namespace is denied, and the controller reaches the remote worker on 5672 once the worker runs. Clean up on both sides:
+Expected: the name resolves, the fetch from an arbitrary namespace is denied, and the controller reaches the remote worker on 5672 once the worker runs. Clean up on both sides, the node first, then put the record back:
 
 ```bash
-kubectl delete namespace submariner-smoke                 # central
 kubectl delete -f ~/remote-node/smoke-test.yaml           # node
+kubectl delete namespace submariner-smoke                 # central
+kubectl -n submariner-k8s-broker patch configmap cluster-<id> --type merge -p '{"data":{"exports":"federation-z/exareme2-test-workers-service"}}'   # central
 ```
 
 ## 7) Clean up credentials
@@ -262,7 +270,8 @@ To serve real data, replace the `csv-data` ConfigMap volume in `exaflow-worker/s
 
 - Re-running any script is safe; each step checks the current state first.
 - Health: `./preflight.sh --stage health` on the node checks the node's side: the connection to the central cluster and the address it runs through (the central gateway's LoadBalancer address), the gateway policy routing for every remote CIDR, the networkd drop-in, the route watchdog, the IPsec firewall, the worker's export (published to the broker, `Ready=True`), clusterset DNS from the worker and a TCP connection from the worker to the aggregation server. DNS alone does not show a publishing failure: imports and DNS answer from local copies, so the node still resolves every name while the central cluster uses stale data. A name can also resolve to an address that no longer answers, when the central side publishes a stale record; the connection test detects that. `../enrollment/check-central.sh` checks the central side. Run both after a reboot, an upgrade or a change on the central cluster. Each gateway reports only its own side, so one can show `connected` and the other `error`.
-- Credential rotation: re-run `enroll-remote.sh CLUSTER_ID=<id> ...` on the central cluster, transfer the new files and re-run `join-submariner.sh`; Helm upgrades the release in place. `ROTATE_IDENTITY=true` additionally invalidates all earlier tokens of the account.
+- Credential rotation: re-run `enroll-remote.sh CLUSTER_ID=<id> ...` on the central cluster with the `SUBNETS` and `EXPORTS` of the first enrollment, transfer the new files and re-run `join-submariner.sh`; Helm upgrades the release in place. `ROTATE_IDENTITY=true` additionally invalidates all earlier tokens of the account.
+- Allowed exports: the node may publish only the services in its enrollment record, the `exports` entry of the ConfigMap `cluster-<id>` in `submariner-k8s-broker` on the central cluster. To add or remove one, patch the record there as in step 6 and run `../enrollment/verify-enrollment.sh CLUSTER_ID=<id> IMPERSONATE=true`, which needs no token. Delete a ServiceExport on the node before its entry is removed from the record.
 - Version alignment: the Submariner version is pinned in `common/submariner/operator/kustomization.yaml` (central) and as `SUBMARINER_VERSION` in `setup-tools.sh`, `preflight.sh` and `join-submariner.sh` (remote). Renovate moves them together (group `submariner`).
 - Upgrading Submariner: plan central and all nodes as one maintenance window.
   1. Apply any change to the out-of-band RBAC.
@@ -369,6 +378,8 @@ helm upgrade submariner-operator submariner-latest/submariner-operator --namespa
 ### The broker refuses the node's objects ("denied request" from a ValidatingAdmissionPolicy)
 
 The node advertises a cluster ID or subnets that differ from its enrollment. `cluster-id.txt` must equal the suffix of the account the token belongs to (`preflight.sh --stage join` checks the token subject), and `submariner.clusterCidr` and `serviceCidr` in `submariner-values.yaml` must lie within the `SUBNETS` given to `enroll-remote.sh`. Re-enroll with the right values or fix the values file, then re-run the join.
+
+A refusal by `submariner-remote-cluster-exports` means the node publishes a service that is not in its enrollment record. The ServiceExport on the node does not become `Ready`, and its status and the Lighthouse agent log carry the broker's message, which names the service and the recorded exports. Add the service to the record on the central cluster (the command is in step 6) or delete the ServiceExport on the node. A message about parameters that were not found means that no enrollment record exists on the central cluster.
 
 ### Tunnel never leaves `connecting`
 

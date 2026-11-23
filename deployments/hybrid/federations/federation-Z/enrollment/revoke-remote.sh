@@ -9,7 +9,7 @@
 #                                   multicluster.kubernetes.io/source-cluster=<id>
 #   serviceimports (per cluster)    labelled with any of the cluster labels = <id>
 #   serviceimports (aggregated)     entry <id> removed from status.clusters and the annotation
-#                                   timestamp.submariner.io/<id> (written by Lighthouse up to 0.21) dropped;
+#                                   timestamp.submariner.io/<id> (older Lighthouse versions) dropped;
 #                                   the object is deleted when no exporting cluster remains
 #
 # Parameters (environment variables or key=value arguments):
@@ -17,7 +17,7 @@
 #   BROKER_NS    default submariner-k8s-broker
 #   DRY_RUN      default false; true only prints what would be deleted or patched (kubectl --dry-run=server)
 #
-# The remote node itself is cleaned separately (remote-node/README.md, "Removing a remote node").
+# The remote node itself is cleaned separately (remote-node/README.md, "Remove a remote node").
 set -euo pipefail
 
 log() { printf '==> %s\n' "$*"; }
@@ -44,6 +44,8 @@ dry=()
 k() { kubectl -n "$BROKER_NS" "$@"; }
 
 # --- identity ---------------------------------------------------------------------------------------------
+# The RoleBindings go first and the enrollment ConfigMap last: while the account can write, its record
+# (the parameter of the subnet and export policies) exists.
 log "Removing the account ${SA}, its RoleBindings and the enrollment ConfigMap"
 k delete rolebinding "${SA}-submariner-remote-cluster" "${SA}-submariner-remote-cluster-secret-syncer" \
   "${SA}-submariner-k8s-broker-cluster" --ignore-not-found ${dry[@]+"${dry[@]}"}
@@ -73,10 +75,10 @@ for label in submariner-io/clusterID multicluster.kubernetes.io/source-cluster l
 done
 
 log "Detaching ${CLUSTER_ID} from aggregated ServiceImports"
-# Aggregated imports carry no cluster label; the exporters are listed in status.clusters, and objects created
-# by Lighthouse up to 0.21 also have a timestamp.submariner.io/<id> annotation per exporter. Remaining exporters
-# recompute spec.ports on their next EndpointSlice event; until then ports of the removed cluster may linger
-# (harmless: they resolve to no endpoints).
+# Aggregated imports carry no cluster label; the exporters are listed in status.clusters, and imports from
+# older Lighthouse versions also have a timestamp.submariner.io/<id> annotation per exporter. The remaining
+# exporters recompute spec.ports on their next EndpointSlice event; until then ports of the removed cluster
+# may linger (harmless: they resolve to no endpoints).
 # shellcheck disable=SC2016  # go-template braces, not shell expansion
 aggregated="$(k get serviceimports.multicluster.x-k8s.io -o go-template='{{range .items}}{{$n := .metadata.name}}{{range .status.clusters}}{{if eq .cluster "'"$CLUSTER_ID"'"}}{{$n}} {{end}}{{end}}{{end}}')"
 for si in $aggregated; do
