@@ -7,7 +7,8 @@
 #                                  token, MicroK8s settings, gateway label, tool versions
 #   ./preflight.sh --stage health  joined node: connection to the central cluster,
 #                                  gateway policy routing, networkd drop-in, route
-#                                  watchdog, clusterset DNS
+#                                  watchdog, worker export, clusterset DNS, aggregation
+#                                  server reachable from the worker
 #
 # Prints one line per check (PASS, WARN or FAIL) and exits non-zero when any
 # check fails. Run as the user who will run join-submariner.sh.
@@ -28,7 +29,7 @@ STAGE=install
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --stage) STAGE="${2:-}"; shift 2 ;;
-    -h|--help) sed -n '2,23p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    -h|--help) sed -n '2,24p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
     *) echo "unknown argument: $1" >&2; exit 2 ;;
   esac
 done
@@ -269,7 +270,7 @@ stage_health() {
     fail "kubectl reaches MicroK8s" "run 'newgrp microk8s' or check ~/.kube/config"
     return
   fi
-  local ns=submariner-operator local_id central_id central_ep status remote_cidrs routing missing c dropin
+  local ns=submariner-operator local_id central_id central_ep status remote_cidrs routing missing c dropin exports not_ready
   local_id="$(kubectl -n "$ns" get submariners.submariner.io -o jsonpath='{.items[0].spec.clusterID}' 2>/dev/null)"
   central_id="$(kubectl -n "$ns" get endpoints.submariner.io -o jsonpath='{range .items[*]}{.spec.cluster_id}{" "}{.spec.subnets}{"\n"}{end}' 2>/dev/null \
     | grep -F "\"${CENTRAL_POD_CIDR}\"" | awk '{print $1}' | head -1)"
@@ -304,9 +305,30 @@ stage_health() {
     fail "systemd-networkd keeps foreign routes" "re-run setup-microk8s.sh"
   fi
   check_route_watchdog
+  # The worker's export must be Ready, that is, published to the broker. Imports and DNS answer from
+  # local copies when publishing fails, so the DNS check below does not detect it.
+  exports="$(kubectl -n federation-z get serviceexports.multicluster.x-k8s.io \
+    -o jsonpath='{range .items[*]}{.metadata.name}={range .status.conditions[?(@.type=="Ready")]}{.status}{end}{" "}{end}' 2>/dev/null)"
+  if [[ -z "${exports// /}" ]]; then
+    warn "worker export published" "no ServiceExport in federation-z (step 8 not done)"
+  else
+    not_ready="$(tr ' ' '\n' <<<"$exports" | sed '/^$/d' | grep -v '=True$' | tr '\n' ' ')"
+    if [[ -z "$not_ready" ]]; then
+      pass "worker export published" "$exports"
+    else
+      fail "worker export published" "${not_ready}; see the Ready message (kubectl -n federation-z get serviceexport -o yaml) and kubectl -n ${ns} logs deploy/submariner-lighthouse-agent"
+    fi
+  fi
   if kubectl -n federation-z get pod exaflow-localworker-0 >/dev/null 2>&1; then
     if kubectl -n federation-z exec exaflow-localworker-0 -- getent hosts exaflow-aggregation-service.federation-z.svc.clusterset.local >/dev/null 2>&1; then
       pass "clusterset DNS from the worker" "exaflow-aggregation-service resolves"
+      # The name can resolve to an address that no longer answers (stale export on the central side).
+      if kubectl -n federation-z exec exaflow-localworker-0 -- python3 -c \
+        "import socket; socket.create_connection(('exaflow-aggregation-service.federation-z.svc.clusterset.local', 50051), 5)" >/dev/null 2>&1; then
+        pass "aggregation server answers the worker" "TCP 50051"
+      else
+        fail "aggregation server answers the worker" "the name resolves but TCP 50051 does not answer; on the central cluster run check-central.sh (published address, tier, NetworkPolicies)"
+      fi
     else
       fail "clusterset DNS from the worker" "does not resolve; Lighthouse serves the central records only while the connection is connected"
     fi

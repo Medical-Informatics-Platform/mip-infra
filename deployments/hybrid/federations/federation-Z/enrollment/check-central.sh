@@ -9,10 +9,11 @@
 # drop-in and route watchdog DaemonSets, leftover uninstall DaemonSets, Calico
 # API server and IP pools, Calico tiers, the broker registration of the central
 # cluster, PSK and broker credentials, no Secrets in the broker namespace, the
-# clusterset.local forward in the cluster CoreDNS, per-remote admission
-# policies, hybrid namespace label, the policy Applications, the API server
-# egress pins of the network-policy charts (apiServer.cidrs), and subctl (when
-# installed).
+# clusterset.local forward in the cluster CoreDNS, the Lighthouse export
+# records and the published address of every ServiceExport of the federation,
+# per-remote admission policies, hybrid namespace label, the policy
+# Applications, the API server egress pins of the network-policy charts
+# (apiServer.cidrs), and subctl (when installed).
 #
 # Parameters (environment variables or key=value arguments):
 #   FEDERATION_NS      default federation-z
@@ -29,7 +30,7 @@ set -uo pipefail
 for arg in "$@"; do
   case "$arg" in
     *=*) export "${arg?}" ;;
-    -h|--help) sed -n '2,23p' "$0"; exit 0 ;;
+    -h|--help) sed -n '2,24p' "$0"; exit 0 ;;
     *) printf 'ERROR: unknown argument %s (use KEY=value)\n' "$arg" >&2; exit 2 ;;
   esac
 done
@@ -199,6 +200,50 @@ elif [[ -n "$lh_ip" && "$corefile" == *"clusterset.local:53"* && "$corefile" == 
   pass "CoreDNS clusterset forward" "clusterset.local -> ${lh_ip}"
 else
   fail "CoreDNS clusterset forward" "block missing or stale in ${COREDNS_NS}/${COREDNS_CONFIGMAP} (lighthouse-coredns ${lh_ip:-unknown}); kubectl -n ${OPERATOR_NS} rollout restart deploy/submariner-operator"
+fi
+
+# --- service discovery ------------------------------------------------------------------------------------------
+# The Lighthouse agent keeps one ServiceImport per exported service in its namespace, named
+# <service>-<namespace>-<cluster ID>. It also uses any other ServiceImport there that carries the cluster ID as
+# an export record, and the record it processes last decides the published address. A leftover record can
+# therefore publish an address the Service no longer has.
+records="$(kc -n "$OPERATOR_NS" get serviceimports.multicluster.x-k8s.io -o jsonpath='{range .items[*]}{.metadata.name}{" "}{end}' 2>/dev/null)"
+extra_records=""
+for r in $records; do
+  [[ "$r" == *"-${local_id}" ]] || extra_records="${extra_records} ${r}"
+done
+if [[ -z "$local_id" ]]; then
+  warn "Lighthouse export records" "cluster ID unknown, not checked"
+elif [[ -z "$extra_records" ]]; then
+  pass "Lighthouse export records" "$(wc -w <<<"$records" | tr -d ' ') in ${OPERATOR_NS}, all named after ${local_id}"
+else
+  fail "Lighthouse export records" "unexpected in ${OPERATOR_NS}:${extra_records}; delete them, then delete the agent pod, which otherwise keeps the export withdrawn (kubectl -n ${OPERATOR_NS} delete pod -l app=submariner-lighthouse-agent)"
+fi
+# Every ServiceExport of the federation must be published (Ready), and a ClusterIP Service must be published
+# with the address it has now. Remote nodes resolve the clusterset name to the published address.
+exports="$(kc -n "$FEDERATION_NS" get serviceexports.multicluster.x-k8s.io -o jsonpath='{range .items[*]}{.metadata.name}={range .status.conditions[?(@.type=="Ready")]}{.status}{end}{" "}{end}' 2>/dev/null)"
+if [[ -z "${exports// /}" ]]; then
+  warn "ServiceExports of ${FEDERATION_NS}" "none found (Application ${FEDERATION_NS}-submariner-network-policy)"
+else
+  export_issues=""
+  for e in $exports; do
+    name="${e%%=*}"
+    if [[ "$e" != *"=True" ]]; then
+      export_issues="${export_issues} ${name}(not Ready)"
+      continue
+    fi
+    svc_ip="$(kc -n "$FEDERATION_NS" get svc "$name" -o jsonpath='{.spec.clusterIP}' 2>/dev/null)"
+    published="$(kc -n "$FEDERATION_NS" get endpointslices -l "multicluster.kubernetes.io/service-name=${name},multicluster.kubernetes.io/source-cluster=${local_id}" -o jsonpath='{range .items[*]}{.endpoints[*].addresses[*]}{" "}{end}' 2>/dev/null | tr -s ' ' | sed 's/^ //; s/ $//')"
+    # Headless Services (clusterIP None) publish pod addresses, which are not compared.
+    if [[ -n "$svc_ip" && "$svc_ip" != None && "$published" != "$svc_ip" ]]; then
+      export_issues="${export_issues} ${name}(Service ${svc_ip}, published ${published:-nothing})"
+    fi
+  done
+  if [[ -z "$export_issues" ]]; then
+    pass "ServiceExports of ${FEDERATION_NS}" "${exports% } published with the Services' addresses"
+  else
+    fail "ServiceExports of ${FEDERATION_NS}" "${export_issues# }; check the Lighthouse export records above and kubectl -n ${OPERATOR_NS} logs deploy/submariner-lighthouse-agent"
+  fi
 fi
 
 # --- per-remote identities -------------------------------------------------------------------------------------
