@@ -1,64 +1,47 @@
-# Getting Started
+# Getting started
 
-End-to-end install of the MIP infrastructure on an empty KaaS cluster. Follow the steps in order — the bootstrap is staged on purpose (see [architecture.md](architecture.md#bootstrap-order)).
+Install the MIP infrastructure on an empty cluster. Follow the steps in order: the bootstrap is staged on purpose ([architecture.md](architecture.md#bootstrap-order)).
 
 ## Prerequisites
 
-- A Kubernetes cluster with **≥ 3 schedulable worker nodes** (Argo CD HA uses hard anti-affinity for its 3 redis replicas).
-- `kubectl` ≥ v1.33 configured for that cluster.
-- `kustomize` (standalone or `kubectl kustomize`).
-- `argocd` CLI (recommended).
-- Network access to the cluster API and to GitHub. If you are off-network, see [remote-access.md](remote-access.md).
-- An SSH deploy key for the `mip-infra` repo (Argo CD will use it).
+- A Kubernetes cluster with at least 3 schedulable worker nodes. Argo CD HA spreads its 3 Redis replicas with hard anti-affinity.
+- `kubectl` 1.33 or later, configured for the cluster.
+- `kustomize`, standalone or `kubectl kustomize`.
+- The `argocd` CLI (recommended).
+- Network access to the cluster API and to GitHub. Off the network, see [remote-access.md](remote-access.md).
+- An SSH deploy key for the private `mip-deployments` repository, if you use it.
 
-Prepare this repository:
-
-```
-# Clone the repository 
+```bash
 git clone https://github.com/Medical-Informatics-Platform/mip-infra.git
 cd mip-infra
-
-# Checkout the desired branch (main for production, or your feature branch)
-git checkout main
+git checkout main   # or your feature branch
 ```
 
 ## 1. Install Argo CD
 
-The HA overlay lives in [`argo-setup/`](../argo-setup/). Run the steps in
-[`argo-setup/README.md` § Bootstrap](../argo-setup/README.md#bootstrap) -
-they cover hostname rewrite, namespace creation, `kustomize build … |
-kubectl apply --server-side`, rollout wait, and bootstrap admin-password
-rotation. From off-cluster you'll need a tunnel + `/etc/hosts` mapping for
-the final `argocd login` step — see [remote-access.md](remote-access.md).
+Follow [`argo-setup/README.md`, Bootstrap](../argo-setup/README.md#bootstrap): it rewrites the host name, creates the namespace, applies the HA overlay, waits for the rollout and rotates the admin password. From outside the cluster network, `argocd login` needs a tunnel and an `/etc/hosts` entry ([remote-access.md](remote-access.md)).
 
-When `kubectl -n argocd-mip-team rollout status deploy/argocd-server`
-returns successfully and you've rotated the admin password, come back here.
+Continue when `kubectl -n argocd-mip-team rollout status deploy/argocd-server` succeeds and the admin password is rotated.
 
-## 2. Register repositories with Argo CD
+## 2. Register the repositories
 
-Register this repository in Argo CD. If your deployment values live in the
-private `mip-deployments` repository, register that too.
+This repository is public; Argo CD reads it over HTTPS. If the deployment values live in the private `mip-deployments` repository, register it too, with its deploy key.
 
 ```bash
-# Public repo used for infrastructure manifests
 argocd repo add https://github.com/Medical-Informatics-Platform/mip-infra.git \
   --name mip-infra
 
-# Optional private repo used for per-federation deployment values
-# If you don't have a key yet, generate one and add the public key as a read-only deploy key.
-# ssh-keygen -t ed25519 -f ./argocd-remote-key -C "argocd deploy key" -N ""
-# less argocd-remote-key.pub
-# https://github.com/Medical-Informatics-Platform/mip-deployments/settings/keys
-
+# Optional. Create a key and add its public part as a read-only deploy key of mip-deployments:
+#   ssh-keygen -t ed25519 -f ./argocd-remote-key -C "argocd deploy key" -N ""
+#   https://github.com/Medical-Informatics-Platform/mip-deployments/settings/keys
 argocd repo add git@github.com:Medical-Informatics-Platform/mip-deployments.git \
   --ssh-private-key-path ./argocd-remote-key \
   --name mip-deployments
 ```
 
-## 3. Apply out-of-band RBAC
+## 3. Apply the out-of-band RBAC
 
-Some workloads (HAProxy ingress, Submariner, ECK beats) use cluster-scoped RBAC
-that is applied once, outside Argo CD:
+Argo CD may not create cluster-scoped RBAC or admission policies ([rbac-layers.md](rbac-layers.md)). Apply them once, by hand:
 
 ```bash
 kubectl apply -f base/mip-infrastructure/rbac/haproxy-public-rbac.yaml
@@ -70,56 +53,34 @@ kubectl apply -f https://raw.githubusercontent.com/Medical-Informatics-Platform/
 kubectl apply -f base/mip-infrastructure/notebook-operator/rbac.yaml
 ```
 
-The notebook operator CRDs come from the `mip-jupyter` tag matching the operator
-image tag (that repository rewrites history, so commits are not stable); bump it with the image tag in
-`common/notebook-operator/manifests/deployment.yaml`. `rbac.yaml` holds the
-operator namespace, the ServiceAccounts, the two notebook ClusterRoles, the
-reconciler account and the admission policies that confine it and the hub; it
-names no federation. The reconciler CronJob, synced by Argo CD from
-`common/notebook-operator` with the operator Deployment, binds both ClusterRoles
-in every `federation-*` namespace labelled `mip.namespace-type=federation` and
-writes the operator's watch list, within five minutes of the namespace
-appearing. On a fresh cluster the operator pod waits in
-`CreateContainerConfigError` until that first run. The same Application deploys
-the notebook API proxy with a certificate from cert-manager (present for the
-ingress); the reconciler copies the proxy CA into every federation. The hubs use
-the proxy only after the two switches described in
-[operations.md](operations.md#switching-the-hub-to-the-notebook-api-proxy).
+Notebooks:
 
-Upgrading from the version of `rbac.yaml` that listed federations: apply the
-file, wait for one reconciler run
-(`kubectl -n federation-<x> get rolebinding mip-notebook-operator mip-jupyterhub`),
-then delete what the file no longer declares, in every federation namespace:
-`kubectl -n federation-<x> delete role jupyterhub rolebinding jupyterhub`.
+- The notebook CRDs come from the `mip-jupyter` tag that matches the operator image tag; that repository rewrites history, so commits are not stable. Change the tag together with the image tag in `common/notebook-operator/manifests/deployment.yaml`.
+- `rbac.yaml` holds the operator namespace and accounts, the two notebook ClusterRoles, and the admission policies that confine the reconciler and the hub. It names no federation.
+- The reconciler CronJob (synced from `common/notebook-operator`) binds both ClusterRoles in every `federation-*` namespace labelled `mip.namespace-type=federation`, within five minutes. On a fresh cluster the operator pod waits in `CreateContainerConfigError` until that first run.
+- The same Application deploys the notebook API proxy; the hubs use it only after the switch in [operations.md](operations.md#switch-the-hub-to-the-notebook-api-proxy).
+- Upgrading from a `rbac.yaml` that listed federations: apply the file, wait for one reconciler run (`kubectl -n federation-<x> get rolebinding mip-notebook-operator mip-jupyterhub`), then delete the old objects in every federation: `kubectl -n federation-<x> delete role jupyterhub rolebinding jupyterhub`.
 
-`submariner-rbac.yaml` also creates the `submariner-operator` and
-`submariner-k8s-broker` namespaces and the RBAC of the PostSync hook that
-copies the broker credentials for the local operator.
-`submariner-remote-admission.yaml` holds the Role and the admission policies
-for the per-remote broker accounts that remote nodes use
-(see [hybrid-federations.md](hybrid-federations.md)).
+Submariner:
+
+- `submariner-rbac.yaml` creates the namespaces `submariner-operator` and `submariner-k8s-broker` and binds the broker Role to the operator's broker account.
+- `submariner-remote-admission.yaml` holds the Role and the admission policies of the remote nodes' broker accounts ([hybrid-federations.md](hybrid-federations.md)).
+- Create the IPsec PSK before the first sync of `submariner-operator` ([common/submariner/README.md](../common/submariner/README.md), Install, step 2).
 
 ## 4. Bootstrap the AppProjects
 
-Two-step bootstrap. The order matters: nothing else can sync until
-`mip-argo-project-infrastructure` exists.
+Nothing else syncs until the project `mip-argo-project-infrastructure` exists:
 
 ```bash
-# Bootstrap AppProject
-kubectl apply -f projects/mip-infrastructure.yaml
-
-# ApplicationSet that creates every other AppProject
-kubectl apply -f base/argo-projects/argo-projects.yaml
-
-# Verify — should show all static projects + per-fed projects
-kubectl get appprojects -n argocd-mip-team
+kubectl apply -f projects/mip-infrastructure.yaml          # the bootstrap AppProject
+kubectl apply -f base/argo-projects/argo-projects.yaml     # the ApplicationSet that creates every other AppProject
+kubectl get appprojects -n argocd-mip-team                 # static projects and one per federation
 kubectl get applicationsets -n argocd-mip-team
 ```
 
 ## 5. Deploy the infrastructure ApplicationSet
 
-This discovers every federation under `deployments/local/federations/` and
-creates a wrapper Application for each.
+The ApplicationSet finds the federations (local and hybrid) and the common applications, and creates one Application for each:
 
 ```bash
 CURRENT_BRANCH=$(git rev-parse --abbrev-ref HEAD)
@@ -137,59 +98,44 @@ argocd app sync "${SAFE_BRANCH_NAME}-infra-clusterset"
 argocd app get  "${SAFE_BRANCH_NAME}-infra-clusterset"
 ```
 
-## 6. Provision required secrets
+## 6. Create the secrets
 
-MIP workloads expect the secrets listed below to exist **before** their Applications sync. If they don't, the workload pods will hang in`ContainerCreating` until you create them.
+Create these Secrets before their Applications sync; otherwise the pods wait in `ContainerCreating`.
 
-| Secret                 | Namespace                | Purpose                                   |
-| ---------------------- | ------------------------ | ----------------------------------------- |
-| `keycloak-credentials` | `mip-common-datacatalog` | EBRAINS Keycloak tenant credentials       |
-| `keycloak-credentials` | `federation-<X>`         | Same, repeated per federation namespace   |
-| `mip-secret`           | `federation-<X>`         | Per-federation DB admin/user/password set |
-| `jupyterhub-crypt`     | `federation-<X>`         | JupyterHub `crypt-key`, per federation    |
-| `codex-llm`            | `mip-athena`             | Optional. Key `base-url`: the Jupyter AI (Codex) inference server URL ending in `/v1`, read only by `athena-proxy`; without it Codex is off |
+| Secret | Namespace | Content |
+| --- | --- | --- |
+| `keycloak-credentials` | `mip-common-datacatalog` and every `federation-<x>` | EBRAINS Keycloak tenant credentials |
+| `mip-secret` | `federation-<x>` | Database users and passwords of the federation |
+| `jupyterhub-crypt` | `federation-<x>` | JupyterHub `crypt-key` |
+| `codex-llm` | `mip-athena` | Optional. Key `base-url`: the Jupyter AI (Codex) inference server URL ending in `/v1`, read only by `athena-proxy`. Without it Codex is off. |
 
-The `mip-secret` schema (one per federation):
+`mip-secret`, one per federation, with values unique to the federation:
 
 ```yaml
 apiVersion: v1
 kind: Secret
 metadata:
   name: mip-secret
-  namespace: federation-<X>
+  namespace: federation-<x>
 type: Opaque
 stringData:
-  platform-backend-db.DB_ADMIN_USER:     <unique-per-fed>
-  platform-backend-db.DB_ADMIN_PASSWORD: <unique-per-fed>
-  platform-backend-db.PLATFORM_DB_USER:     <unique-per-fed>
-  platform-backend-db.PLATFORM_DB_PASSWORD: <unique-per-fed>
+  platform-backend-db.DB_ADMIN_USER: <value>
+  platform-backend-db.DB_ADMIN_PASSWORD: <value>
+  platform-backend-db.PLATFORM_DB_USER: <value>
+  platform-backend-db.PLATFORM_DB_PASSWORD: <value>
 ```
 
-### Generate them safely
-
-[`scripts/gen_secrets.sh`](../scripts/gen_secrets.sh) interactively creates all required secrets for every `federation-*` namespace plus `mip-common-datacatalog`. Values are autogenerated (24-char alphanumeric); nothing is logged.
+[`scripts/gen_secrets.sh`](../scripts/gen_secrets.sh) creates them for every `federation-*` namespace and for `mip-common-datacatalog`, and prints no secret. It asks for the Keycloak client credentials (and the optional Codex URL) and generates the other values (24 random characters). It skips existing Secrets; `--force` replaces them. It needs `kubectl` with the right context and the right to create Secrets:
 
 ```bash
-# from the repository root
-chmod +x scripts/gen_secrets.sh
 ./scripts/gen_secrets.sh
 ```
 
-Requires `bash`, `kubectl`, RBAC to create secrets, and a `kubectl` context pointing at the right cluster.
-
-## 7. Verify
+## 7. Check
 
 ```bash
-kubectl get appprojects -n argocd-mip-team        # all projects present
-argocd app list                                   # workload Apps appearing
-argocd app list | grep -E "(mip-argo-project-|argo-project-)"
-kubectl get appprojects -n argocd-mip-team -w     # watch dynamic projects appear
+kubectl get appprojects -n argocd-mip-team   # all projects present
+argocd app list                              # every Application Synced and Healthy
 ```
 
-A healthy cluster shows every Application as `Synced` + `Healthy`.
-
-## Known transient hiccups
-
-- **Apps hang waiting for secrets** → re-check [step 6](#6-provision-required-secrets), then resync.
-
-For other failure modes see [troubleshooting.md](troubleshooting.md).
+An Application that waits for a Secret syncs once you create it (step 6). Other problems: [troubleshooting.md](troubleshooting.md).

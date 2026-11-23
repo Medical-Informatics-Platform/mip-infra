@@ -6,13 +6,13 @@
 #
 # Usage:
 #   sudo ./setup-tools.sh
-#   sudo SUBMARINER_VERSION=0.24.1 ./setup-tools.sh
+#   sudo SUBMARINER_VERSION=0.25.0 ./setup-tools.sh
 #
 # Re-running is safe: every step checks the current state first.
 set -euo pipefail
 
 # renovate: datasource=github-releases depName=submariner-io/releases
-SUBMARINER_VERSION="${SUBMARINER_VERSION:-0.24.1}"
+SUBMARINER_VERSION="${SUBMARINER_VERSION:-0.25.0}"
 SUBCTL_BIN="${SUBCTL_BIN:-/usr/local/bin/subctl}"
 
 if [[ $EUID -ne 0 ]]; then
@@ -35,9 +35,9 @@ if ! command -v snap >/dev/null 2>&1; then
   apt-get install -y snapd
 fi
 
-# subctl is downloaded straight from the release asset and pinned to the
-# Submariner version. It must match the chart version deployed on the central
-# cluster (common/submariner/{broker,operator}/kustomization.yaml).
+# subctl comes from the release asset, pinned to the Submariner version and
+# checked against the release's SHA-256 list. Its version must match the
+# central chart (common/submariner/operator/kustomization.yaml).
 installed=""
 if [[ -x "$SUBCTL_BIN" ]]; then
   installed="$("$SUBCTL_BIN" version 2>/dev/null | grep -oE 'v[0-9]+\.[0-9]+\.[0-9]+' | head -1 || true)"
@@ -48,13 +48,21 @@ else
   log "Installing subctl v${SUBMARINER_VERSION} (${arch})"
   tmp="$(mktemp -d)"
   trap 'rm -rf "$tmp"' EXIT
-  url="https://github.com/submariner-io/releases/releases/download/v${SUBMARINER_VERSION}/subctl-v${SUBMARINER_VERSION}-linux-${arch}.tar.xz"
-  curl -fsSL --max-time 120 -o "$tmp/subctl.tar.xz" "$url"
-  tar -xJf "$tmp/subctl.tar.xz" -C "$tmp"
-  # The archive layout has changed between releases; locate the binary by name.
-  bin="$(find "$tmp" -type f -name "subctl*linux-${arch}*" | head -1)"
-  [[ -n "$bin" ]] || bin="$(find "$tmp" -type f -name 'subctl*' ! -name '*.tar.xz' | head -1)"
+  base="https://github.com/submariner-io/releases/releases/download/v${SUBMARINER_VERSION}"
+  name="subctl-v${SUBMARINER_VERSION}-linux-${arch}.tar.xz"
+  url="${base}/${name}"
+  curl -fsSL --max-time 120 -o "$tmp/$name" "$url"
+  curl -fsSL --max-time 60 -o "$tmp/subctl-checksums.txt" "${base}/subctl-checksums.txt"
+  (cd "$tmp" && grep -E "^[0-9a-f]{64}  ${name}\$" subctl-checksums.txt | sha256sum -c --quiet -) \
+    || { echo "SHA-256 of ${name} does not match ${base}/subctl-checksums.txt" >&2; exit 1; }
+  mkdir "$tmp/extract"
+  tar -xJf "$tmp/$name" -C "$tmp/extract"
+  # Archive layout: subctl-vX/subctl-vX-linux-<arch> up to 0.24, subctl-vX/subctl from 0.25.
+  bin="$(find "$tmp/extract" -type f -name "subctl*linux-${arch}*" | head -1)"
+  [[ -n "$bin" ]] || bin="$(find "$tmp/extract" -type f -name subctl | head -1)"
   [[ -n "$bin" ]] || { echo "subctl binary not found in ${url}" >&2; exit 1; }
+  # Run it once before replacing the installed binary.
+  "$bin" version >/dev/null 2>&1 || { echo "the subctl binary from ${url} does not run on this host" >&2; exit 1; }
   install -m 0755 "$bin" "$SUBCTL_BIN"
 fi
 

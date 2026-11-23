@@ -8,7 +8,7 @@ The central side (broker, operator, controller, network policies, ServiceExports
 
 | Side | Component | Where defined |
 | --- | --- | --- |
-| Central (RKE2) | Submariner broker and operator, chart 0.24.1, gateway on a LoadBalancer address | `common/submariner/` |
+| Central (RKE2) | Submariner broker namespace and operator, chart 0.25.0, gateway on a LoadBalancer address | `common/submariner/` |
 | Central | Per-node broker accounts, admission policies, enrollment scripts | `base/mip-infrastructure/rbac/submariner-remote-admission.yaml`, `../enrollment/` |
 | Central | exaflow controller, aggregation server, remote allow policies, ServiceExports | `../mip-infrastructure/` |
 | Central | Cluster-wide deny of remote CIDRs | `common/security/remote-clusters/` |
@@ -21,7 +21,7 @@ Only the remote node initiates the IPsec tunnel to the central gateway (`natEnab
 
 | Parameter | Default | Used by | Notes |
 | --- | --- | --- | --- |
-| `SUBMARINER_VERSION` | `0.24.1` | `setup-tools.sh`, `join-submariner.sh` | Must equal the chart version in `common/submariner/{broker,operator}/kustomization.yaml`; subctl is pinned to the same version |
+| `SUBMARINER_VERSION` | `0.25.0` | `setup-tools.sh`, `join-submariner.sh`, `preflight.sh` | Must equal the chart version in `common/submariner/operator/kustomization.yaml`; subctl is pinned to the same version and checked against the release's SHA-256 list |
 | `MICROK8S_CHANNEL` | `1.33/stable` | `setup-microk8s.sh` | A supported Kubernetes minor close to the central cluster's (1.34 at the time of writing); Submariner does not require the two clusters to match |
 | `IPv4_CLUSTER_CIDR` | `10.3.0.0/16` | `setup-microk8s.sh`, the node's values file, enrollment `SUBNETS` | Pod CIDR; must not overlap the central pod CIDR (`10.42.0.0/16`), the central service CIDR or another remote node |
 | `IPv4_SERVICE_CIDR` | `10.152.185.0/24` | `setup-microk8s.sh`, the node's values file, enrollment `SUBNETS` | Service CIDR; same rule |
@@ -156,7 +156,7 @@ helm repo add submariner-latest https://submariner-io.github.io/submariner-chart
 helm repo update
 kubectl label node "$(kubectl get nodes -o jsonpath='{.items[0].metadata.name}')" submariner.io/gateway=true --overwrite
 helm upgrade --install submariner-operator submariner-latest/submariner-operator \
-  --version 0.24.1 \
+  --version 0.25.0 \
   --namespace submariner-operator --create-namespace \
   --set submariner.clusterId="$(cat cluster-id.txt)" \
   --set-string broker.token="$(cat broker-token.txt)" \
@@ -257,9 +257,18 @@ To serve real data, replace the `csv-data` ConfigMap volume in `exaflow-worker/s
 
 - Re-running any script is safe; each step checks the current state first.
 - Credential rotation: re-run `enroll-remote.sh CLUSTER_ID=<id> ...` on the central cluster, transfer the new files and re-run `join-submariner.sh`; Helm upgrades the release in place. `ROTATE_IDENTITY=true` additionally invalidates all earlier tokens of the account.
-- Version alignment: the Submariner version is pinned in `common/submariner/{broker,operator}/kustomization.yaml` (central) and as `SUBMARINER_VERSION` in `setup-tools.sh`, `preflight.sh` and `join-submariner.sh` (remote). Renovate moves them together (group `submariner`).
-- Upgrading Submariner: apply any change to the out-of-band RBAC first, then let Argo CD sync the central charts (the operator restarts, updates the CRDs and rolls the gateway, route agent and Lighthouse). Expect the tunnels to stay in `connecting` until each node runs the new version as well: across the 0.21 to 0.24 boundary the libreswan generations differ and reject each other's child-SA proposals, so treat central and all nodes as one maintenance window. Then, on every node, copy the updated directory and run `sudo ./setup-tools.sh` (installs the matching `subctl`) and `./join-submariner.sh` from any directory without credential files: the script detects the existing release and upgrades it in place with the credentials stored in the release, then waits until every pod runs the target version. Take a VM snapshot before, and verify with `subctl show versions` and `subctl show connections` on the node and on the central cluster. The central controller can restart once while a node's tunnel is down (see step 8).
-- After the central side is upgraded, run `../enrollment/check-central.sh` before touching the nodes and again at the end. Two things it catches that upgrades have broken: the `clusterset.local` forward in the cluster CoreDNS Corefile (a re-apply of the CoreDNS chart drops it and every clusterset name returns NXDOMAIN on the central side, controller included; `kubectl -n submariner-operator rollout restart deploy/submariner-operator` makes the operator write it again), and a Lighthouse agent that restarted while DNS was unavailable (same probe failure as on the node; recreate its pod). Clean up the smoke-test namespaces on both sides before the upgrade, or the leftover export shows up in every agent log.
+- Version alignment: the Submariner version is pinned in `common/submariner/operator/kustomization.yaml` (central) and as `SUBMARINER_VERSION` in `setup-tools.sh`, `preflight.sh` and `join-submariner.sh` (remote). Renovate moves them together (group `submariner`).
+- Upgrading Submariner: plan central and all nodes as one maintenance window.
+  1. Apply any change to the out-of-band RBAC.
+  2. Let Argo CD sync the central chart. The operator restarts, updates the CRDs and rolls the gateway, route agent and Lighthouse.
+  3. On every node, take a VM snapshot, copy the updated directory and run, with the node's own `VALUES_FILE` and `DATASET` where it has them (node 2: `submariner-values-node2.yaml`, `synthetic_b`):
+     - `sudo ./setup-tools.sh`: installs the matching `subctl`.
+     - `./join-submariner.sh`, from a directory without credential files: upgrades the existing release in place with its stored credentials and waits until every pod runs the target version.
+     - `./deploy-worker.sh`: re-applies the worker's export and, if changed, the worker image.
+  4. Verify with `subctl show versions` and `subctl show connections` on the node and on the central cluster.
+
+  The Lighthouse agent and CoreDNS can restart once when they start before the operator has updated the local MCS CRDs (`error getting REST mapper` for `v1beta1`). The central controller can restart once while a node's tunnel is down (see step 8). Across a libreswan major version (0.21 to 0.24: libreswan 4 to 5) the two ends reject each other's child-SA proposals, and the tunnels stay `connecting` until the node runs the new version. 0.24 and 0.25 both use libreswan 5 and the MCS API serves both versions, so a node on 0.24 keeps working until its upgrade.
+- After the central side is upgraded, run `../enrollment/check-central.sh` before touching the nodes and again at the end. One of its checks is the `clusterset.local` forward in the cluster CoreDNS Corefile: a re-apply of the CoreDNS chart drops it, and every clusterset name then returns NXDOMAIN on the central side, controller included. `kubectl -n submariner-operator rollout restart deploy/submariner-operator` makes the operator write it again. Clean up the smoke-test namespaces on both sides before the upgrade, or the leftover export shows up in every agent log.
 - MicroK8s follows its snap track (`1.33/stable`) and receives patch releases automatically. Moving to another track is a reinstall (`reset-node.sh`, new channel).
 - The Calico API server certificate expires after 365 days. Delete the `calico-apiserver-certs` secret in `calico-apiserver` and re-run `setup-microk8s.sh` to renew it.
 - MicroK8s certificates: the automatic re-issue on address change is disabled, expiry is not. `sudo microk8s refresh-certs -c` shows the remaining validity (365 days for the server and front-proxy certificates). Renew with `sudo microk8s refresh-certs -e server.crt` and `-e front-proxy-client.crt` in a maintenance window: the control plane restarts, and the Lighthouse agent pod must be recreated afterwards if its log shows the probe error described under Troubleshooting.
@@ -346,7 +355,7 @@ openssl s_client -connect <broker-api-host>:6443 -CAfile broker-ca.crt -verify_h
 Then update the release:
 
 ```bash
-helm upgrade submariner-operator submariner-latest/submariner-operator --namespace submariner-operator --reuse-values --version 0.24.1 \
+helm upgrade submariner-operator submariner-latest/submariner-operator --namespace submariner-operator --reuse-values --version 0.25.0 \
   --set-string broker.ca="$(cat broker-ca-base64.txt)"
 ```
 
@@ -370,7 +379,8 @@ The node advertises a cluster ID or subnets that differ from its enrollment. `cl
 
 - Imports are distributed into the namespace of the exported service and only once that namespace exists locally. Right after the join the node has no `federation-z` namespace, so `kubectl get serviceimports -A` is empty, the central names do not resolve yet, and the agent logs `Unable to distribute resource ... due to missing namespace "federation-z"`. This is expected; the agent retries when the namespace appears (step 8 creates it), and `kubectl -n federation-z get serviceimports` then lists the central exports.
 - On the node, `kubectl -n kube-system get configmap coredns -o yaml` must contain a `clusterset.local` block forwarding to the Lighthouse CoreDNS service. Re-enabling the MicroK8s `dns` addon rewrites the ConfigMap and drops the block; the operator re-adds it after a restart of `submariner-operator`.
-- On the node, `kubectl -n submariner-operator logs deploy/submariner-lighthouse-agent` showing `Error accessing the broker API server ... lookup <broker-api-host>: i/o timeout` at start-up followed by repeated `x509: certificate signed by unknown authority` means the agent probed the broker while cluster DNS was unavailable and kept a client without the broker CA. The typical cause is a control-plane restart during the join (`journalctl -u snap.microk8s.daemon-apiserver-kicker` shows `cert change detected`; `setup-microk8s.sh` disables this re-issue, see the next section). Recreate the pod with `kubectl -n submariner-operator delete pod -l app=submariner-lighthouse-agent`; the new log shows `Caches populated` for ServiceImport and EndpointSlice and no further errors. A `rollout restart` of the Deployment has no effect: the operator owns it and reverts the change within seconds. `join-submariner.sh` recreates the pod automatically when it detects the pattern. The gateway can show a few restarts from the same moment; they are harmless once `subctl show gateways` reports it active.
+- Repeated `x509: certificate signed by unknown authority` in `kubectl -n submariner-operator logs deploy/submariner-lighthouse-agent`: the broker CA given at the join is wrong; see "Certificate errors" above. Exception on 0.24 or older: if cluster DNS was unavailable when the agent started (reboot, control-plane restart), the agent keeps a client without the CA, while the gateway, which uses the same CA, shows no x509 errors. Recreate the agent pod (`kubectl -n submariner-operator delete pod -l app=submariner-lighthouse-agent`). 0.25 always loads the CA.
+- The files in this directory target 0.25. On a 0.24 node, `deploy-worker.sh` stops at the `v1beta1` ServiceExport, which the 0.24 CRDs do not serve; run it only after the node's upgrade.
 - `kubectl get serviceexport -A -o yaml` must show `Valid=True` and `Ready=True`; a `False` condition carries a message naming the cause (typically the Service does not exist yet).
 - On the central cluster, the ServiceImport appears in the exporting namespace; if it does not, check `kubectl -n submariner-operator logs deploy/submariner-lighthouse-agent` on both sides.
 

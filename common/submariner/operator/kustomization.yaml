@@ -4,12 +4,15 @@ kind: Kustomization
 helmCharts:
   - name: submariner-operator
     repo: https://raw.githubusercontent.com/submariner-io/submariner-charts/gh-pages/charts
-    version: 0.24.1
+    version: 0.25.0
     releaseName: submariner-operator
     namespace: submariner-operator
     valuesFile: values.yaml
     includeCRDs: true
-resources: [gateway-loadbalancer-ip.yaml, gateway-node-networkd.yaml]
+resources:
+  - gateway-loadbalancer-ip.yaml
+  - broker-credentials.yaml
+  - gateway-node-networkd.yaml
 patches:
   - target:
       group: rbac.authorization.k8s.io
@@ -111,19 +114,6 @@ patches:
       kind: ClusterRoleBinding
       metadata:
         name: submariner-lighthouse-coredns
-  # Patch to add brokerK8sSecret since the chart doesn't support it in values
-  - target:
-      group: submariner.io
-      kind: Submariner
-      name: submariner
-    patch: |-
-      apiVersion: submariner.io/v1alpha1
-      kind: Submariner
-      metadata:
-        name: submariner
-      spec:
-        brokerK8sSecret: submariner-broker-secret
-        ceIPSecPSKSecret: submariner-ipsec-psk
   # Namespaced RBAC resources
   - target:
       group: rbac.authorization.k8s.io

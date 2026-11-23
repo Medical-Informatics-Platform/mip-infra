@@ -1,5 +1,5 @@
 ---
-# Per-remote identities on the Submariner broker (Submariner 0.24.1, Kubernetes >= 1.30).
+# Per-remote identities on the Submariner broker (Submariner 0.25.0, Kubernetes >= 1.30).
 #
 # Contents:
 #   1. Role submariner-remote-cluster            - what one remote cluster may do in the broker namespace
@@ -18,10 +18,13 @@
 #   Cluster.spec.cluster_id, Endpoint.spec.cluster_id, Endpoint.spec.subnets
 # Labels on broker copies (admiral pkg/federate/federator.go, lighthouse pkg/agent/controller):
 #   submariner-io/clusterID                     - set by the admiral broker syncer on every local -> broker copy
-#   multicluster.kubernetes.io/source-cluster   - set by Lighthouse on its EndpointSlices (and pre-0.16 ServiceImports)
+#   multicluster.kubernetes.io/source-cluster   - set by Lighthouse on its EndpointSlices and on the per-cluster
+#                                                 ServiceImport of every export (agent.go, newServiceImport)
 #   lighthouse.submariner.io/sourceCluster      - legacy (pre-0.16) ServiceImport label, migration path only
 # Aggregated ServiceImports (one per exported service, named <service>-<namespace>) carry none of these labels;
-# ownership is expressed through status.clusters[].cluster and the annotation timestamp.submariner.io/<clusterID>.
+# the exporting clusters are listed in status.clusters[].cluster. Lighthouse up to 0.21 also wrote an
+# annotation timestamp.submariner.io/<clusterID> per exporter; later versions ignore it, and objects created
+# by 0.21 or older keep it.
 apiVersion: rbac.authorization.k8s.io/v1
 kind: Role
 metadata:
@@ -91,6 +94,10 @@ spec:
   # A CEL error or an unavailable policy denies the request rather than letting it through.
   failurePolicy: Fail
   matchConstraints:
+    # Equivalent (the API default) also matches requests through other served versions of a listed
+    # resource. The MCS CRDs serve v1alpha1 and v1beta1 with identical schemas. Both are listed so the
+    # rule matches either version, also on a cluster whose CRDs do not serve v1beta1.
+    matchPolicy: Equivalent
     namespaceSelector:
       matchLabels:
         kubernetes.io/metadata.name: submariner-k8s-broker
@@ -107,12 +114,12 @@ spec:
       # serviceimports/status must be listed: the Lighthouse agent updates status.clusters through the
       # status subresource. On such a request object/oldObject are complete objects.
       - apiGroups: [multicluster.x-k8s.io]
-        apiVersions: [v1alpha1]
+        apiVersions: [v1alpha1, v1beta1]
         operations: [CREATE, UPDATE, DELETE]
         resources: [serviceimports, serviceimports/status]
   matchConditions:
-    # Only the per-remote accounts are constrained. The chart's client account used by the central operator
-    # (submariner-broker-submariner-k8s-broker-client), cluster administrators, controllers and Argo CD are
+    # Only the per-remote accounts are constrained. The central cluster's broker account
+    # (submariner-operator/submariner-broker-client), cluster administrators, controllers and Argo CD are
     # not matched and remain unaffected.
     - name: caller-is-remote-cluster-account
       expression: >-
@@ -171,7 +178,7 @@ spec:
     - name: targetHasClusterLabel
       expression: variables.clusterLabelKeys.exists(k, k in variables.targetLabels)
     # Aggregated ServiceImport: no cluster label, annotated with the exported service name
-    # (lighthouse service_import.go: Distribute builds it with these annotations and no labels).
+    # (lighthouse service_import_aggregate.go: createOrUpdateAggregate builds it with annotations and no labels).
     - name: isAggregatedServiceImport
       expression: >-
         variables.isServiceImport && !variables.targetHasClusterLabel
@@ -251,7 +258,9 @@ spec:
              && (!(k in variables.oldLabels) || variables.oldLabels[k] == variables.targetLabels[k]))
       message: cluster ownership labels may not be added, removed or changed on update
       reason: Forbidden
-    # --- ServiceImport, legacy per-cluster copy (has cluster labels) -------------------------------------
+    # --- ServiceImport, per-cluster copy (has cluster labels) ----------------------------------------------
+    # One per export and cluster, created with generateName <service>-. The exporters compare these copies to
+    # agree on ports and session affinity (service_import_conflict.go).
     - expression: >-
         !(variables.isServiceImport && variables.targetHasClusterLabel)
         || (variables.targetOwnedByCaller && (!variables.isUpdate || variables.oldOwnedByCaller))
@@ -270,24 +279,27 @@ spec:
         (multicluster.kubernetes.io/service-name annotation)
       reason: Forbidden
     # --- aggregated ServiceImport, CREATE -----------------------------------------------------------------
-    # Distribute creates it with annotations service-name, sourceNamespace and timestamp.submariner.io/<own id>
-    # and status.clusters [<own id>]; status is cleared by the API server before admission (status subresource)
-    # and written afterwards through /status.
+    # createOrUpdateAggregate creates it with the annotations service-name and sourceNamespace, for a ClusterSetIP
+    # service also use-clusterset-ip and, when it allocates a clusterset IP, clusterset-ip-allocated-by <own id>.
+    # status.clusters [<own id>] is cleared by the API server before admission (status subresource) and written
+    # afterwards through /status. The object names its creator nowhere else, so the rule cannot require the
+    # caller's ID; it refuses every field that would record another cluster. A timestamp annotation is accepted
+    # for the caller only (agents up to 0.21 set it).
     - expression: >-
         !(variables.isAggregatedServiceImport && variables.isCreate)
-        || (variables.callerTimestampKey in variables.targetAnnotations
-            && variables.targetAnnotations.filter(k, k.startsWith(variables.timestampPrefix))
+        || (variables.targetAnnotations.filter(k, k.startsWith(variables.timestampPrefix))
                  .all(k, k == variables.callerTimestampKey)
             && (!(variables.allocatedByKey in variables.targetAnnotations)
                 || variables.targetAnnotations[variables.allocatedByKey] == variables.callerID)
             && variables.targetClusters.all(c, c == variables.callerID))
       message: >-
-        a new aggregated ServiceImport may only record the calling cluster
-        (timestamp.submariner.io/<id> annotation, clusterset-ip-allocated-by, status.clusters)
+        a new aggregated ServiceImport may not record another cluster
+        (timestamp.submariner.io/<id> annotations, clusterset-ip-allocated-by, status.clusters)
       reason: Forbidden
     # --- aggregated ServiceImport, UPDATE: status.clusters -------------------------------------------------
-    # Every exporter updates the shared object (ports, session affinity by the oldest exporter, its own
-    # membership). The only permitted change to status.clusters is adding or removing the caller's own entry.
+    # Every exporter updates the shared object (its own membership; ports and session affinity by the exporter
+    # with the oldest per-cluster copy). The only permitted change to status.clusters is adding or removing the
+    # caller's own entry.
     # On a main-resource update the API server copies status from the stored object, so this holds trivially;
     # it is enforced on /status updates.
     - expression: >-
@@ -337,8 +349,8 @@ spec:
         after creation
       reason: Forbidden
     # --- aggregated ServiceImport, DELETE -------------------------------------------------------------------
-    # service_import_aggregator.go deletes the object (with a resourceVersion precondition) when removing the
-    # caller leaves status.clusters empty; at that moment the stored object lists only the caller.
+    # updateAggregate (service_import_aggregate.go) deletes the object, with a resourceVersion precondition, when
+    # removing the caller leaves status.clusters empty; at that moment the stored object lists only the caller.
     - expression: >-
         !(variables.isAggregatedServiceImport && variables.isDelete)
         || variables.targetClusters.all(c, c == variables.callerID)

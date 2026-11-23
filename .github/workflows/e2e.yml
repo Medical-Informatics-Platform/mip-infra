@@ -175,13 +175,12 @@ jobs:
           set -euo pipefail
           # Submariner: a live e2e needs a second cluster and an IPsec mesh —
           # meaningless on kind. Building with --enable-helm still verifies
-          # the Renovate-bumped chart versions exist upstream and template
-          # cleanly against our values.
-          kustomize build --enable-helm common/submariner/broker >/tmp/broker.yaml
-          test -s /tmp/broker.yaml
+          # the Renovate-bumped chart version exists upstream and templates
+          # cleanly against our values. There is no broker chart: the broker
+          # is a namespace and its out-of-band RBAC.
           kustomize build --enable-helm common/submariner/operator >/tmp/operator.yaml
           test -s /tmp/operator.yaml
-          echo "OK: submariner broker + operator render"
+          echo "OK: submariner operator renders"
           # Hybrid federation overrides deploy on a cluster CI cannot reach;
           # at least prove the composition still builds.
           kustomize build deployments/hybrid/federations/federation-Z/mip-infrastructure >/dev/null

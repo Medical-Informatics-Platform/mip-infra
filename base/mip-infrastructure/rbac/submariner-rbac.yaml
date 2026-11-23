@@ -99,43 +99,6 @@ rules:
     verbs: [create, get, list, update]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
-kind: ClusterRole
-metadata:
-  name: submariner-routeagent
-rules:
-  - apiGroups: ['']
-    resources: [configmaps]
-    verbs: [get, list, watch, update]
-  - apiGroups: [apiextensions.k8s.io]
-    resources: [customresourcedefinitions]
-    verbs: [get, list, create, update, delete]
-  - apiGroups: ['']
-    resources: [pods, services]
-    verbs: [get, list, watch]
-  - apiGroups: [operator.openshift.io]
-    resources: [dnses]
-    verbs: [get, list, watch, update]
-  - apiGroups: [config.openshift.io]
-    resources: [networks]
-    verbs: [get, list]
-  - apiGroups: ['']
-    resources: [nodes]
-    verbs: [get, list, watch, update]
----
-apiVersion: rbac.authorization.k8s.io/v1
-kind: ClusterRoleBinding
-metadata:
-  name: submariner-routeagent
-subjects:
-  - kind: ServiceAccount
-    name: submariner-routeagent
-    namespace: submariner-k8s-broker
-roleRef:
-  apiGroup: rbac.authorization.k8s.io
-  kind: ClusterRole
-  name: submariner-routeagent
----
-apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding
 metadata:
   name: submariner-globalnet
@@ -150,14 +113,15 @@ roleRef:
 ---
 # Namespaced Roles/Bindings (Extracted to prevent ArgoCD sync errors)
 #
-# Broker client Role of the account used by the central operator itself.
-# Because the operator references the broker credentials through
-# brokerK8sSecret, it runs a "broker secret syncer" that lists and watches
-# Secrets in this namespace and blocks reconciliation until that list
-# succeeds; secrets get/list/watch must therefore stay. Nothing sensitive may
-# be stored in this namespace besides this account's own token: the IPsec PSK
-# lives in submariner-operator only. serviceaccounts get/list (granted by the
-# upstream chart) is used by no runtime component and is dropped.
+# Broker Role of the central cluster, bound to the operator's broker account
+# submariner-operator/submariner-broker-client. Kubernetes fills its token
+# Secret (common/submariner/operator/broker-credentials.yaml).
+# The operator references the broker credentials through brokerK8sSecret, so
+# it runs a broker secret syncer: it lists and watches Secrets in this
+# namespace and blocks reconciliation until the list succeeds. secrets
+# get/list/watch must stay. Keep no Secret in this namespace; the broker token
+# and the IPsec PSK are in submariner-operator. serviceaccounts get/list from
+# the upstream chart is unused and dropped.
 #
 # This account is not handed to remote clusters; remote nodes use their own
 # cluster-<id> accounts bound to the narrower submariner-remote-cluster Role
@@ -195,8 +159,8 @@ roleRef:
   name: submariner-broker-submariner-k8s-broker-cluster
 subjects:
   - kind: ServiceAccount
-    name: submariner-broker-submariner-k8s-broker-client
-    namespace: submariner-k8s-broker
+    name: submariner-broker-client
+    namespace: submariner-operator
 ---
 # Operator ClusterRoles and ClusterRoleBindings
 apiVersion: rbac.authorization.k8s.io/v1
@@ -325,57 +289,6 @@ subjects:
   - kind: ServiceAccount
     name: submariner-routeagent
     namespace: submariner-operator
----
-# RBAC for broker secret copier job (used by PostSync hook). In the broker
-# namespace the hook only reads the client token secret and removes a legacy
-# PSK copy; it writes secrets in the operator namespace only.
-apiVersion: rbac.authorization.k8s.io/v1
-kind: Role
-metadata:
-  name: broker-secret-handler
-  namespace: submariner-k8s-broker
-rules:
-  - apiGroups: ['']
-    resources: [secrets]
-    verbs: [get, delete]
----
-apiVersion: rbac.authorization.k8s.io/v1
-kind: RoleBinding
-metadata:
-  name: broker-secret-copier-reader
-  namespace: submariner-k8s-broker
-roleRef:
-  apiGroup: rbac.authorization.k8s.io
-  kind: Role
-  name: broker-secret-handler
-subjects:
-  - kind: ServiceAccount
-    name: broker-secret-copier
-    namespace: submariner-k8s-broker
----
-apiVersion: rbac.authorization.k8s.io/v1
-kind: Role
-metadata:
-  name: operator-secret-writer
-  namespace: submariner-operator
-rules:
-  - apiGroups: ['']
-    resources: [secrets]
-    verbs: [get, create, update, patch]
----
-apiVersion: rbac.authorization.k8s.io/v1
-kind: RoleBinding
-metadata:
-  name: broker-secret-copier-writer
-  namespace: submariner-operator
-roleRef:
-  apiGroup: rbac.authorization.k8s.io
-  kind: Role
-  name: operator-secret-writer
-subjects:
-  - kind: ServiceAccount
-    name: broker-secret-copier
-    namespace: submariner-k8s-broker
 ---
 # Namespaced permissions for submariner-operator to watch resources in its own namespace
 apiVersion: rbac.authorization.k8s.io/v1

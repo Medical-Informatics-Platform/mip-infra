@@ -5,12 +5,11 @@ Deploys Submariner for multi-cluster connectivity in MIP infrastructure using of
 ## Overview
 
 This deployment uses:
-- Official `submariner-k8s-broker` Helm chart for broker components
-- Official `submariner-operator` Helm chart for cluster connectivity
+- Official `submariner-operator` Helm chart for cluster connectivity, rendered by Kustomize (`operator/`)
 - Custom values files for environment-specific configuration
-- Kustomize for additional customization when needed
+- Out-of-band namespaces and RBAC in `base/mip-infrastructure/rbac/submariner-rbac.yaml`
 
-The central cluster hosts the broker and its own operator (this directory). Remote nodes join with the same operator chart, installed by Helm from `deployments/hybrid/federations/federation-Z/remote-node/`. Design notes: [docs/hybrid-federations.md](../../docs/hybrid-federations.md).
+The central cluster hosts the broker and its own operator (this directory). The broker is the namespace `submariner-k8s-broker` with its out-of-band RBAC; the operator installs and updates the broker CRDs. The `submariner-k8s-broker` chart is not used: it would only add a client account with a long-lived token. Remote nodes join with the same operator chart, installed by Helm from `deployments/hybrid/federations/federation-Z/remote-node/`. Design notes: [docs/hybrid-federations.md](../../docs/hybrid-federations.md).
 
 ## Prerequisites
 
@@ -25,32 +24,29 @@ The central cluster hosts the broker and its own operator (this directory). Remo
 
 ## Manual Installation guide for testing (we use argocd normally)
 
-### 1. Deploy Broker and Operator (Public Cluster via Argo CD)
+### 1. Deploy the operator (central cluster, through Argo CD)
 
 ```bash
-# Apply the Argo CD Applications
+# Apply the Argo CD Application
 kubectl apply -f submariner.yaml
 
-# Sync the applications
-argocd app sync submariner-broker
+# Sync it
 argocd app sync submariner-operator
 ```
 
-The out-of-band RBAC in `base/mip-infrastructure/rbac/submariner-rbac.yaml` must exist beforehand (see `docs/getting-started.md`, step 3). The PostSync hook `broker/copy-secret-hook.yaml` then copies the broker client token and CA into `submariner-operator` and generates the IPsec PSK (`submariner-ipsec-psk`) once, in `submariner-operator` only. The client Role can read secrets in the broker namespace (the operator's broker secret syncer requires it), so nothing sensitive besides that account's own token may be stored there; the PSK is kept in `submariner-operator`. Remote clusters do not receive this token; each gets its own `cluster-<id>` account with a narrower Role (see `docs/hybrid-federations.md`).
+The out-of-band RBAC in `base/mip-infrastructure/rbac/submariner-rbac.yaml` must exist beforehand (see `docs/getting-started.md`, step 3), and so must the IPsec PSK (next section).
 
-### 2. Get Broker Info
+The operator reaches the broker with its own account `submariner-operator/submariner-broker-client` (`operator/broker-credentials.yaml`). Kubernetes writes the token and the cluster CA into its Secret `submariner-broker-client-token` (type `kubernetes.io/service-account-token`), which `submariner.brokerK8sSecret` references. The account's broker Role can read Secrets in the broker namespace, as the operator's broker secret syncer requires, so keep no Secret there; `check-central.sh` checks this. Remote clusters do not get this token. Each has its own `cluster-<id>` account with a narrower Role and bound tokens (`docs/hybrid-federations.md`).
 
-The broker chart creates the service account `submariner-broker-submariner-k8s-broker-client` and its token secret. Remote clusters use that token, the broker CA and the shared PSK:
+### 2. IPsec PSK
+
+All clusters of the clusterset share the PSK. It is not stored in git. Create it once, before the first sync, in `submariner-operator` only:
 
 ```bash
-umask 077
-S=submariner-broker-submariner-k8s-broker-client-token
-kubectl -n submariner-k8s-broker get secret "$S" -o jsonpath='{.data.token}' | base64 -d > broker-token.txt   # decoded
-kubectl -n submariner-k8s-broker get secret "$S" -o jsonpath='{.data.ca\.crt}' > broker-ca-base64.txt         # base64 as stored
-kubectl -n submariner-operator get secret submariner-ipsec-psk -o jsonpath='{.data.psk}' > broker-psk.txt     # base64 as stored
+kubectl -n submariner-operator create secret generic submariner-ipsec-psk --from-literal=psk="$(openssl rand -base64 64 | tr -d '\n')"
 ```
 
-The CA and the PSK are passed to the operator chart encoded, the token decoded; the reasons are explained in `docs/hybrid-federations.md` ("Credentials and encodings"). Credentials are never written into tracked files.
+`ipsec.pskSecret` references it. Replacing it re-keys the clusterset: every remote cluster must then be enrolled and joined again. Remote clusters get it at enrollment (`deployments/hybrid/federations/federation-Z/enrollment/enroll-remote.sh`), with their own bound token and the broker CA.
 
 ### 3. Deploy to Remote Cluster
 
@@ -74,25 +70,24 @@ Consequence:
 For a real uninstall, do it in controller order:
 - delete the `Submariner` custom resource first and wait for its cleanup to complete
 - then remove the operator workload
-- then remove the broker workload if needed
+- then remove the broker namespace if needed
 
 ## Configuration
 
 ### Key Values
 
-Operator values are in `operator/values.yaml`, broker values in `broker/values.yaml`:
+Operator values are in `operator/values.yaml`:
 
 - `submariner.clusterId`: unique identifier of this cluster in the clusterset
 - `submariner.clusterCidr`: pod network CIDR
 - `submariner.serviceCidr`: service network CIDR (empty lets the operator discover it)
 - `submariner.natEnabled`, `submariner.loadBalancerEnabled`, `submariner.cableDriver`
 - `service.loadBalancerIP` and the MetalLB annotations for the gateway service (also patched in `patches/gateway-loadbalancer-ip.yaml`)
-- `globalnet.enabled` (broker): enable for overlapping CIDRs (false by default)
+- `submariner.brokerK8sSecret` and `ipsec.pskSecret`: the Secrets with the broker credentials and the PSK. The operator mounts them as files, not as environment variables. `broker.token`, `broker.ca` and `ipsec.psk` stay empty.
 
-The broker token and CA are not set in values; `operator/kustomization.yaml` patches the `Submariner` resource with `brokerK8sSecret: submariner-broker-secret` and `ceIPSecPSKSecret: submariner-ipsec-psk`, both created by the PostSync hook.
+Globalnet is not used (the CIDRs of all clusters are distinct).
 
-See official chart documentation for all available options:
-- [submariner-k8s-broker chart](https://github.com/submariner-io/submariner-charts/tree/main/submariner-k8s-broker)
+See the official chart documentation for all available options:
 - [submariner-operator chart](https://github.com/submariner-io/submariner-charts/tree/main/submariner-operator)
 
 ## Gateway node

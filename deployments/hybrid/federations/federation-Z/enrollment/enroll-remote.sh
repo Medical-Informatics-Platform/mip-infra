@@ -91,7 +91,7 @@ if ! kubectl get validatingadmissionpolicy submariner-remote-cluster-ownership >
     "be able to touch other clusters' broker objects. Apply submariner-remote-admission.yaml."
 fi
 kubectl -n "$OPERATOR_NS" get secret "$PSK_SECRET" >/dev/null 2>&1 \
-  || die "secret ${PSK_SECRET} not found in ${OPERATOR_NS} (created by the broker PostSync hook)"
+  || die "secret ${PSK_SECRET} not found in ${OPERATOR_NS} (created once by hand, see common/submariner/README.md, IPsec PSK)"
 
 # --- identity ---------------------------------------------------------------------------------------------
 if [[ "$ROTATE_IDENTITY" == true ]] && kubectl -n "$BROKER_NS" get serviceaccount "$SA" >/dev/null 2>&1; then
@@ -155,7 +155,6 @@ fi
 # data and pins nothing, but still documents the enrollment.
 {
   cat <<EOF
----
 apiVersion: v1
 kind: ConfigMap
 metadata:

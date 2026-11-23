@@ -4,7 +4,7 @@
 # Consumed by join-submariner.sh together with a generated local-values.yaml
 # that carries the cluster ID and the broker credentials (never committed).
 # The chart version is passed on the command line and must match the central
-# cluster (common/submariner/{broker,operator}/kustomization.yaml).
+# cluster (common/submariner/operator/kustomization.yaml).
 broker:
   server: mip.chuv.cscs.ch:6443  # central API server; real value, consumed by Helm
   namespace: submariner-k8s-broker

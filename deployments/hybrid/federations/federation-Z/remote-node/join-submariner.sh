@@ -17,7 +17,7 @@
 #                                    # SUBMARINER_VERSION (helm upgrade --reuse-values)
 #
 # Parameters (environment variables):
-#   SUBMARINER_VERSION     chart version, default 0.24.1; must match the central cluster
+#   SUBMARINER_VERSION     chart version, default 0.25.0; must match the central cluster
 #   SUBMARINER_CLUSTER_ID  overrides cluster-id.txt; must equal the enrolled account name suffix
 #   CREDENTIALS_DIR        default: current directory
 #   VALUES_FILE            default: submariner-values.yaml next to this script
@@ -29,7 +29,7 @@ set -euo pipefail
 
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # renovate: datasource=github-releases depName=submariner-io/releases
-SUBMARINER_VERSION="${SUBMARINER_VERSION:-0.24.1}"
+SUBMARINER_VERSION="${SUBMARINER_VERSION:-0.25.0}"
 CREDENTIALS_DIR="${CREDENTIALS_DIR:-$PWD}"
 VALUES_FILE="${VALUES_FILE:-${here}/submariner-values.yaml}"
 RELEASE=submariner-operator
@@ -181,28 +181,6 @@ while :; do
   sleep 10
 done
 kubectl -n "$NS" get pods
-
-# The Lighthouse agent probes the broker once at start-up. When that probe
-# fails because cluster DNS is unavailable (the node's control plane restarting
-# during the join, see setup-microk8s.sh), Admiral keeps a REST config without
-# the broker CA and every later request fails with an x509 error until the
-# process restarts. The operator owns the Deployment and reverts a rollout
-# restart within seconds, so the pod itself is recreated.
-lighthouse_probe_failed() {
-  kubectl -n "$NS" logs deploy/submariner-lighthouse-agent --tail=400 2>/dev/null \
-    | grep -q -E 'Error accessing the broker API server|x509: certificate signed by unknown authority'
-}
-if lighthouse_probe_failed; then
-  log "Lighthouse agent probed the broker while DNS was unavailable; recreating its pod"
-  kubectl -n "$NS" delete pod -l app=submariner-lighthouse-agent --wait=true >/dev/null
-  kubectl -n "$NS" rollout status deploy/submariner-lighthouse-agent --timeout=180s
-  sleep 45
-  if lighthouse_probe_failed; then
-    log "Lighthouse agent still cannot reach the broker; see kubectl -n ${NS} logs deploy/submariner-lighthouse-agent"
-  else
-    log "Lighthouse agent reaches the broker"
-  fi
-fi
 
 log "Connection status"
 subctl show all || true

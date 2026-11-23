@@ -218,7 +218,7 @@ EOF
 }
 serviceimport() { # serviceimport TIMESTAMP_CLUSTER_ID
   cat <<EOF
-apiVersion: multicluster.x-k8s.io/v1alpha1
+apiVersion: multicluster.x-k8s.io/v1beta1
 kind: ServiceImport
 metadata:
   name: verify-enrollment-verify

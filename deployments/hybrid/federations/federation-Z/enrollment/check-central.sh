@@ -7,10 +7,11 @@
 # Checks: gateway node label, gateway DaemonSet and Gateway object, gateway node
 # policy routing and the networkd drop-in DaemonSet, leftover uninstall
 # DaemonSets, Calico API server and IP pools, Calico tiers, the broker
-# registration of the central cluster, PSK placement, the clusterset.local
-# forward in the cluster CoreDNS, per-remote admission policies, hybrid
-# namespace label, the policy Applications, the API server egress pins of the
-# network-policy charts (apiServer.cidrs), and subctl (when installed).
+# registration of the central cluster, PSK and broker credentials, no Secrets
+# in the broker namespace, the clusterset.local forward in the cluster CoreDNS,
+# per-remote admission policies, hybrid namespace label, the policy
+# Applications, the API server egress pins of the network-policy charts
+# (apiServer.cidrs), and subctl (when installed).
 #
 # Parameters (environment variables or key=value arguments):
 #   FEDERATION_NS      default federation-z
@@ -27,7 +28,7 @@ set -uo pipefail
 for arg in "$@"; do
   case "$arg" in
     *=*) export "${arg?}" ;;
-    -h|--help) sed -n '2,20p' "$0"; exit 0 ;;
+    -h|--help) sed -n '2,22p' "$0"; exit 0 ;;
     *) printf 'ERROR: unknown argument %s (use KEY=value)\n' "$arg" >&2; exit 2 ;;
   esac
 done
@@ -146,10 +147,23 @@ else
   fail "broker lists the central cluster" "registered: ${clusters:-none}"
 fi
 kc -n "$OPERATOR_NS" get secret submariner-ipsec-psk >/dev/null 2>&1 \
-  && pass "PSK in the operator namespace" || fail "PSK in the operator namespace" "secret submariner-ipsec-psk missing"
-kc -n "$BROKER_NS" get secret submariner-ipsec-psk >/dev/null 2>&1 \
-  && fail "PSK absent from the broker namespace" "legacy copy still present; re-sync the broker Application" \
-  || pass "PSK absent from the broker namespace"
+  && pass "PSK in the operator namespace" || fail "PSK in the operator namespace" "secret submariner-ipsec-psk missing (common/submariner/README.md, IPsec PSK)"
+# Broker credentials: the token Secret Kubernetes fills for the operator's broker account
+# (common/submariner/operator/broker-credentials.yaml). Checks that the keys exist; prints no values.
+broker_secret="$(kc -n "$OPERATOR_NS" get submariner submariner -o jsonpath='{.spec.brokerK8sSecret}' 2>/dev/null)"
+filled="$(kc -n "$OPERATOR_NS" get secret "${broker_secret:-none}" -o go-template='{{.type}} {{if index .data "token"}}token{{end}} {{if index .data "ca.crt"}}ca{{end}}' 2>/dev/null)"
+if [[ "$filled" == "kubernetes.io/service-account-token token ca" ]]; then
+  pass "broker credentials" "${broker_secret}, filled by the token controller"
+else
+  fail "broker credentials" "Secret ${broker_secret:-unset} is '${filled:-missing}'; sync the submariner-operator Application (broker-credentials.yaml)"
+fi
+# No Secret belongs in the broker namespace: every account with a broker secret syncer can read it.
+broker_ns_secrets="$(kc -n "$BROKER_NS" get secrets -o name 2>/dev/null | sed 's#^secret/##' | tr '\n' ' ')"
+if [[ -z "${broker_ns_secrets// /}" ]]; then
+  pass "no Secrets in the broker namespace"
+else
+  fail "no Secrets in the broker namespace" "${broker_ns_secrets}; delete them (the broker token and the PSK live in ${OPERATOR_NS})"
+fi
 # The operator writes a clusterset.local forward into the cluster's CoreDNS Corefile. A re-apply of the
 # CoreDNS chart (RKE2 upgrade or restart) drops it, and every clusterset name stops resolving until the
 # operator reconciles again; it does not watch that ConfigMap.
@@ -190,7 +204,7 @@ done
 [[ " $pols " == *" allow-submariner-cidrs "* ]] && warn "NetworkPolicy allow-submariner-cidrs" "obsolete all-ports policy still present; delete it"
 kc get globalnetworkpolicies.projectcalico.org remote-clusters.confine-remote-clusters >/dev/null 2>&1 \
   && pass "global policy confine-remote-clusters" || warn "global policy confine-remote-clusters" "not present (Application netpol-remote-clusters)"
-for app in "netpol-${FEDERATION_NS}-hybrid" netpol-remote-clusters "${FEDERATION_NS}-submariner-network-policy" submariner-broker submariner-operator; do
+for app in "netpol-${FEDERATION_NS}-hybrid" netpol-remote-clusters "${FEDERATION_NS}-submariner-network-policy" submariner-operator; do
   st="$(kc -n "$ARGOCD_NS" get application "$app" -o jsonpath='{.status.sync.status}/{.status.health.status}' 2>/dev/null)"
   if [[ "$st" == "Synced/Healthy" ]]; then
     pass "Application ${app}" "$st"
