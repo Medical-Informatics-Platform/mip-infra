@@ -42,16 +42,11 @@ rbac:
 ipsec:
   natPort: 4500
   ikePort: 500
-  # IPsec PSK, key psk. Created once by hand, not in git (common/submariner/README.md, "IPsec PSK").
+  # IPsec PSK, key psk. Created once by hand, not in git (common/submariner/README.md, Install, step 2).
   # Remote clusters get the same value at enrollment.
   pskSecret: submariner-ipsec-psk
-# Service configuration for gateway LoadBalancer
-service:
-  annotations:
-    metallb.universe.tf/address-pool: pool-no-auto
-    metallb.io/address-pool: pool-no-auto
-  loadBalancerIP: 148.187.143.43
-  externalTrafficPolicy: Local
+# The gateway LoadBalancer address and MetalLB pool are set in kustomization.yaml
+# (spec.loadBalancerServiceAnnotations); the chart has no value for them.
 # Resource requirements
 operator:
   resources:

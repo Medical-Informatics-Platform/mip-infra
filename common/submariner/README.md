@@ -82,7 +82,7 @@ Operator values are in `operator/values.yaml`:
 - `submariner.clusterCidr`: pod network CIDR
 - `submariner.serviceCidr`: service network CIDR (empty lets the operator discover it)
 - `submariner.natEnabled`, `submariner.loadBalancerEnabled`, `submariner.cableDriver`
-- `service.loadBalancerIP` and the MetalLB annotations for the gateway service (also patched in `patches/gateway-loadbalancer-ip.yaml`)
+- The gateway LoadBalancer address and MetalLB pool: `spec.loadBalancerServiceAnnotations`, patched onto the `Submariner` resource in `operator/kustomization.yaml` (the chart has no value for it). See "Gateway node".
 - `submariner.brokerK8sSecret` and `ipsec.pskSecret`: the Secrets with the broker credentials and the PSK. The operator mounts them as files, not as environment variables. `broker.token`, `broker.ca` and `ipsec.psk` stay empty.
 
 Globalnet is not used (the CIDRs of all clusters are distinct).
@@ -91,6 +91,8 @@ See the official chart documentation for all available options:
 - [submariner-operator chart](https://github.com/submariner-io/submariner-charts/tree/main/submariner-operator)
 
 ## Gateway node
+
+The operator owns the LoadBalancer Service `submariner-gateway`. It creates it with UDP 4500 (IPsec NAT-T) and UDP 4490 (NAT discovery) and replaces its spec on every reconcile. The address is therefore pinned with the MetalLB annotation `metallb.io/loadBalancerIPs` in `spec.loadBalancerServiceAnnotations` of the `Submariner` resource; the operator merges these annotations into the Service. Remote nodes exchange IPsec only with this address. It is set in three places that must change together: `operator/kustomization.yaml`, `deployments/hybrid/federations/federation-Z/remote-node/central.env` and the remote-nodes group of the hardening inventory. `check-central.sh` checks the assigned address and both ports.
 
 The gateway DaemonSet schedules only on a node labelled `submariner.io/gateway=true`, and MetalLB announces the gateway address from that node. The label is part of the cluster provider's node configuration, not of this repository; after a node redeploy, confirm it with `subctl show gateways` or `deployments/hybrid/federations/federation-Z/enrollment/check-central.sh`, re-apply it by hand if missing (`kubectl label node <worker> submariner.io/gateway=true`) and report it to the provider.
 
@@ -132,7 +134,7 @@ End-to-end routing and clusterset DNS are checked with the smoke test described 
 
 For settings not exposed by Helm charts, use Kustomize patches in `kustomization.yaml`.
 
-Example: Setting a specific LoadBalancer IP (see `patches/` directory).
+Example: the gateway LoadBalancer address and MetalLB pool, patched onto the `Submariner` resource in `operator/kustomization.yaml`.
 
 ## Troubleshooting
 

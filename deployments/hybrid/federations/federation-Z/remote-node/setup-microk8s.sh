@@ -3,8 +3,9 @@
 # node, installs the Calico API server that Submariner needs to manage IP
 # pools, pins Calico's node IP detection and MicroK8s' certificate handling so
 # that the Submariner tunnel interface does not disturb them, installs the
-# watchdog that restores the gateway's policy routing, and labels the node as
-# the Submariner gateway.
+# watchdog that restores the gateway's policy routing, limits IPsec to the
+# central gateway's LoadBalancer address, and labels the node as the Submariner
+# gateway.
 #
 # Usage:
 #   sudo ./setup-microk8s.sh
@@ -19,6 +20,7 @@
 #   CALICO_APISERVER   install the Calico API server, default true
 #   CALICO_IP_AUTODETECTION  Calico IP_AUTODETECTION_METHOD, default kubernetes-internal-ip
 #   LABEL_GATEWAY      label this node submariner.io/gateway=true, default true
+#   CENTRAL_GATEWAY_IP central gateway LoadBalancer address, the only IPsec peer; default from central.env
 #   WAIT_TIMEOUT       seconds to wait for MicroK8s readiness, default 600
 #
 # Re-running is safe. When MicroK8s is already installed the script verifies the
@@ -33,6 +35,8 @@ CALICO_VERSION="${CALICO_VERSION:-}"
 CALICO_APISERVER="${CALICO_APISERVER:-true}"
 CALICO_IP_AUTODETECTION="${CALICO_IP_AUTODETECTION:-kubernetes-internal-ip}"
 LABEL_GATEWAY="${LABEL_GATEWAY:-true}"
+here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+CENTRAL_GATEWAY_IP="${CENTRAL_GATEWAY_IP:-$(sed -n 's/^CENTRAL_GATEWAY_IP=//p' "${here}/central.env" 2>/dev/null | head -1)}"
 WAIT_TIMEOUT="${WAIT_TIMEOUT:-600}"
 LAUNCH_CONFIG=/var/snap/microk8s/common/.microk8s.yaml
 CNI_MANIFEST=/var/snap/microk8s/current/args/cni-network/cni.yaml
@@ -66,6 +70,8 @@ for s in kubectl helm; do
 done
 
 # --- CIDR validation ---------------------------------------------------------
+[[ "$CENTRAL_GATEWAY_IP" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}$ ]] \
+  || die "CENTRAL_GATEWAY_IP '${CENTRAL_GATEWAY_IP}' is not an IPv4 address; set it in ${here}/central.env"
 service_api_ip="$(python3 - "$IPv4_CLUSTER_CIDR" "$IPv4_SERVICE_CIDR" <<'PY'
 import ipaddress
 import sys
@@ -363,6 +369,80 @@ if [[ "$watchdog_changed" == true ]] || ! systemctl -q is-active submariner-rout
   log "Route watchdog running (unit submariner-route-watchdog): restarts the route agent when table 150 loses its routes"
 fi
 
+# --- IPsec with the central gateway only -------------------------------------
+# Submariner connects every gateway to every other one. A remote node exchanges
+# IPsec only with the central gateway: other remote nodes belong to other sites,
+# and a node with a public address can establish a tunnel to a node behind NAT.
+# The table drops IKE (UDP 500), NAT-T (UDP 4500) and NAT discovery (UDP 4490)
+# to and from any other address, and all of them over IPv6. This includes the
+# central gateway node's own address, which changes when the provider moves the
+# gateway, so NAT discovery settles on the LoadBalancer address. A dedicated
+# unit loads the table at boot. Ubuntu's nftables service is not used: its
+# configuration flushes all other rule sets (Calico, Submariner). The hardening
+# playbook adds the same restriction in UFW.
+hub_dir=/etc/submariner-hub
+hub_nft="${hub_dir}/firewall.nft"
+hub_unit=/etc/systemd/system/submariner-hub-firewall.service
+hub_nft_want="#!/usr/sbin/nft -f
+# Written by setup-microk8s.sh: Submariner IPsec only with ${CENTRAL_GATEWAY_IP}.
+table inet submariner_hub
+delete table inet submariner_hub
+table inet submariner_hub {
+	chain input {
+		type filter hook input priority filter - 10; policy accept;
+		udp dport { 500, 4490, 4500 } ip saddr != ${CENTRAL_GATEWAY_IP} counter drop
+		meta nfproto ipv6 udp dport { 500, 4490, 4500 } counter drop
+	}
+	chain output {
+		type filter hook output priority filter - 10; policy accept;
+		udp dport { 500, 4490, 4500 } ip daddr != ${CENTRAL_GATEWAY_IP} counter drop
+		meta nfproto ipv6 udp dport { 500, 4490, 4500 } counter drop
+	}
+}"
+hub_unit_want="[Unit]
+Description=Submariner IPsec only with the central gateway (written by setup-microk8s.sh)
+DefaultDependencies=no
+Wants=network-pre.target
+Before=network-pre.target shutdown.target
+Conflicts=shutdown.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/sbin/nft -f ${hub_nft}
+ExecReload=/usr/sbin/nft -f ${hub_nft}
+ExecStop=/usr/sbin/nft delete table inet submariner_hub
+
+[Install]
+WantedBy=sysinit.target"
+command -v nft >/dev/null 2>&1 || die "nft not found; run setup-tools.sh (package nftables)"
+hub_changed=false
+install -d -m 0755 "$hub_dir"
+if [[ "$(cat "$hub_nft" 2>/dev/null)" != "$hub_nft_want" ]]; then
+  printf '%s\n' "$hub_nft_want" >"$hub_nft"
+  chmod 0644 "$hub_nft"
+  hub_changed=true
+fi
+nft -c -f "$hub_nft" || die "nft rejected ${hub_nft}"
+if [[ "$(cat "$hub_unit" 2>/dev/null)" != "$hub_unit_want" ]]; then
+  printf '%s\n' "$hub_unit_want" >"$hub_unit"
+  chmod 0644 "$hub_unit"
+  systemctl daemon-reload
+  hub_changed=true
+fi
+systemctl -q enable submariner-hub-firewall.service
+if [[ "$hub_changed" == true ]] || ! systemctl -q is-active submariner-hub-firewall.service; then
+  systemctl restart submariner-hub-firewall.service
+  log "IPsec limited to the central gateway ${CENTRAL_GATEWAY_IP} (table inet submariner_hub, unit submariner-hub-firewall)"
+  # A joined node keeps the address its gateway discovered, possibly the central gateway node's
+  # own address, now refused. A new gateway pod runs NAT discovery again and settles on the
+  # LoadBalancer address; the tunnel is down for about a minute.
+  if k -n submariner-operator get pods -l app=submariner-gateway -o name 2>/dev/null | grep -q .; then
+    log "Recreating the Submariner gateway pod so that it reconnects through ${CENTRAL_GATEWAY_IP}"
+    k -n submariner-operator delete pod -l app=submariner-gateway --wait=false >/dev/null
+  fi
+fi
+
 # --- gateway label -----------------------------------------------------------
 node_name="$(k get nodes -o jsonpath='{.items[0].metadata.name}')"
 if [[ "$LABEL_GATEWAY" == true ]]; then
@@ -378,6 +458,7 @@ MicroK8s is ready.
   Node:          ${node_name}
   Pod CIDR:      ${IPv4_CLUSTER_CIDR}
   Service CIDR:  ${IPv4_SERVICE_CIDR}
+  IPsec peer:    ${CENTRAL_GATEWAY_IP} only
   Route watchdog: $(systemctl is-active submariner-route-watchdog.service 2>/dev/null || echo inactive)
   Calico:        ${CALICO_VERSION:-not installed}
   Helm:          $(microk8s.helm3 version --short 2>/dev/null || echo unavailable)

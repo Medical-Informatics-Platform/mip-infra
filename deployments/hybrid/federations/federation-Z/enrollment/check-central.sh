@@ -72,8 +72,26 @@ if [[ "$gws" == *"=active"* ]]; then
 else
   fail "Gateway object" "${gws:-none}"
 fi
+# Gateway LoadBalancer. The assigned address must equal the one pinned in the Submariner resource
+# (common/submariner/operator/kustomization.yaml), the only IPsec peer remote nodes accept. The Service
+# must serve UDP 4500 (IPsec NAT-T) and 4490 (NAT discovery).
+want_vip="$(kc -n "$OPERATOR_NS" get submariner submariner -o jsonpath='{.spec.loadBalancerServiceAnnotations.metallb\.io/loadBalancerIPs}' 2>/dev/null)"
 lb="$(kc -n "$OPERATOR_NS" get svc submariner-gateway -o jsonpath='{.status.loadBalancer.ingress[0].ip}' 2>/dev/null)"
-[[ -n "$lb" ]] && pass "gateway LoadBalancer address" "$lb" || fail "gateway LoadBalancer address" "none assigned"
+lb_ports="$(kc -n "$OPERATOR_NS" get svc submariner-gateway -o jsonpath='{range .spec.ports[*]}{.port}/{.protocol}{" "}{end}' 2>/dev/null)"
+if [[ -z "$lb" ]]; then
+  fail "gateway LoadBalancer address" "none assigned"
+elif [[ -z "$want_vip" ]]; then
+  warn "gateway LoadBalancer address" "${lb}, not pinned through the Submariner resource (loadBalancerServiceAnnotations)"
+elif [[ "$lb" != "$want_vip" ]]; then
+  fail "gateway LoadBalancer address" "${lb}, pinned ${want_vip}; remote nodes accept IPsec only from the pinned address"
+else
+  pass "gateway LoadBalancer address" "${lb} (pinned)"
+fi
+if [[ " ${lb_ports} " == *" 4500/UDP "* && " ${lb_ports} " == *" 4490/UDP "* ]]; then
+  pass "gateway LoadBalancer ports" "$lb_ports"
+else
+  fail "gateway LoadBalancer ports" "${lb_ports:-none}; UDP 4500 and 4490 are needed"
+fi
 
 # The operator creates <component>-uninstall DaemonSets while a Submariner resource is being deleted and
 # removes them when the cleanup finishes; one that outlives the deletion runs an inert pod on the gateway

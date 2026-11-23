@@ -10,11 +10,30 @@ helmCharts:
     valuesFile: values.yaml
     includeCRDs: true
 resources:
-  - gateway-loadbalancer-ip.yaml
   - broker-credentials.yaml
   - gateway-node-networkd.yaml
   - gateway-route-watchdog.yaml
 patches:
+  # Gateway LoadBalancer address and MetalLB pool. The operator owns the Service submariner-gateway
+  # and replaces its spec on every reconcile, but merges spec.loadBalancerServiceAnnotations into it.
+  # The chart has no value for this field. Remote nodes accept IPsec only from this address. It is
+  # also set in deployments/hybrid/federations/federation-Z/remote-node/central.env and in the
+  # remote-nodes group of the hardening inventory; change all three together.
+  - target:
+      group: submariner.io
+      kind: Submariner
+      name: submariner
+    patch: |-
+      apiVersion: submariner.io/v1alpha1
+      kind: Submariner
+      metadata:
+        name: submariner
+      spec:
+        loadBalancerServiceAnnotations:
+          metallb.io/address-pool: pool-no-auto
+          metallb.universe.tf/address-pool: pool-no-auto
+          metallb.io/loadBalancerIPs: 148.187.143.43
+          metallb.universe.tf/loadBalancerIPs: 148.187.143.43
   - target:
       group: rbac.authorization.k8s.io
       kind: ClusterRole

@@ -28,7 +28,7 @@ log "Installing base packages"
 export DEBIAN_FRONTEND=noninteractive
 apt-get update -y
 apt-get install -y --no-install-recommends \
-  ca-certificates curl jq openssl python3 xz-utils netcat-openbsd
+  ca-certificates curl jq nftables openssl python3 xz-utils netcat-openbsd
 
 if ! command -v snap >/dev/null 2>&1; then
   log "Installing snapd"

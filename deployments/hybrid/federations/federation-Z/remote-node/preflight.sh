@@ -5,17 +5,17 @@
 #                                  reachability, kernel modules, CIDR overlap
 #   ./preflight.sh --stage join    join stage: credential files, broker TLS and
 #                                  token, MicroK8s settings, gateway label, tool versions
-#   ./preflight.sh --stage health  joined node: connection to the central cluster,
-#                                  gateway policy routing, networkd drop-in, route
-#                                  watchdog, worker export, clusterset DNS, aggregation
-#                                  server reachable from the worker
+#   ./preflight.sh --stage health  joined node: connection to the central cluster and its
+#                                  address, gateway policy routing, networkd drop-in, route
+#                                  watchdog, IPsec firewall, worker export, clusterset DNS,
+#                                  aggregation server reachable from the worker
 #
 # Prints one line per check (PASS, WARN or FAIL) and exits non-zero when any
 # check fails. Run as the user who will run join-submariner.sh.
 #
 # Parameters (environment variables, all optional):
 #   BROKER_SERVER         host:port of the broker API; default from submariner-values.yaml
-#   CENTRAL_GATEWAY_IP    public IP of the central gateway, used for a route check only
+#   CENTRAL_GATEWAY_IP    central gateway LoadBalancer address, the only IPsec peer; default from central.env
 #   CENTRAL_POD_CIDR      default 10.42.0.0/16
 #   CENTRAL_SERVICE_CIDR  default 10.43.0.0/16
 #   IPv4_CLUSTER_CIDR     default 10.3.0.0/16
@@ -42,7 +42,7 @@ here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 values_file="${here}/submariner-values.yaml"
 BROKER_SERVER="${BROKER_SERVER:-$(sed -n 's/^  server:[[:space:]]*\([^[:space:]#]*\).*/\1/p' "$values_file" 2>/dev/null | head -1)}"
 BROKER_HOST="${BROKER_SERVER%%:*}"
-CENTRAL_GATEWAY_IP="${CENTRAL_GATEWAY_IP:-}"
+CENTRAL_GATEWAY_IP="${CENTRAL_GATEWAY_IP:-$(sed -n 's/^CENTRAL_GATEWAY_IP=//p' "${here}/central.env" 2>/dev/null | head -1)}"
 CENTRAL_POD_CIDR="${CENTRAL_POD_CIDR:-10.42.0.0/16}"
 CENTRAL_SERVICE_CIDR="${CENTRAL_SERVICE_CIDR:-10.43.0.0/16}"
 IPv4_CLUSTER_CIDR="${IPv4_CLUSTER_CIDR:-10.3.0.0/16}"
@@ -57,6 +57,17 @@ pass() { printf 'PASS  %-40s %s\n' "$1" "${2:-}"; }
 warn() { printf 'WARN  %-40s %s\n' "$1" "${2:-}"; warns=$((warns + 1)); }
 fail() { printf 'FAIL  %-40s %s\n' "$1" "${2:-}"; fails=$((fails + 1)); }
 http_code() { curl -sSk --max-time 8 -o /dev/null -w '%{http_code}' "$@" 2>/dev/null || echo 000; }
+# IPsec firewall of setup-microk8s.sh: unit enabled and active, table written for CENTRAL_GATEWAY_IP.
+check_hub_firewall() {
+  if systemctl -q is-enabled submariner-hub-firewall.service 2>/dev/null \
+    && systemctl -q is-active submariner-hub-firewall.service 2>/dev/null \
+    && grep -qsF "!= ${CENTRAL_GATEWAY_IP} counter drop" /etc/submariner-hub/firewall.nft; then
+    pass "IPsec only with the central gateway" "${CENTRAL_GATEWAY_IP} (unit submariner-hub-firewall)"
+  else
+    fail "IPsec only with the central gateway" "re-run setup-microk8s.sh; without it the gateway also builds tunnels to other remote nodes"
+  fi
+}
+
 check_route_watchdog() {
   if systemctl -q is-enabled submariner-route-watchdog.service 2>/dev/null \
     && systemctl -q is-active submariner-route-watchdog.service 2>/dev/null; then
@@ -257,6 +268,7 @@ stage_join() {
   else
     fail "systemd-networkd keeps foreign routes" "re-run setup-microk8s.sh; a networkd restart (unattended upgrades) deletes the gateway's policy routing and the connection turns to error"
   fi
+  check_hub_firewall
   check_route_watchdog
   have="$(subctl version 2>/dev/null | grep -oE 'v[0-9]+\.[0-9]+\.[0-9]+' | head -1)"
   [[ "$have" == "v${SUBMARINER_VERSION}" ]] && pass "subctl version" "$have" || fail "subctl version" "${have:-missing}; expected v${SUBMARINER_VERSION}"
@@ -270,7 +282,7 @@ stage_health() {
     fail "kubectl reaches MicroK8s" "run 'newgrp microk8s' or check ~/.kube/config"
     return
   fi
-  local ns=submariner-operator local_id central_id central_ep status remote_cidrs routing missing c dropin exports not_ready
+  local ns=submariner-operator local_id central_id central_ep status using remote_cidrs routing missing c dropin exports not_ready
   local_id="$(kubectl -n "$ns" get submariners.submariner.io -o jsonpath='{.items[0].spec.clusterID}' 2>/dev/null)"
   central_id="$(kubectl -n "$ns" get endpoints.submariner.io -o jsonpath='{range .items[*]}{.spec.cluster_id}{" "}{.spec.subnets}{"\n"}{end}' 2>/dev/null \
     | grep -F "\"${CENTRAL_POD_CIDR}\"" | awk '{print $1}' | head -1)"
@@ -285,6 +297,13 @@ stage_health() {
       error*) fail "connection to the central cluster" "${status}; SAs up: see policy routing below, otherwise the tunnel (README, Troubleshooting)" ;;
       *) fail "connection to the central cluster" "${status:-none}; if it stays connecting, compare '${central_ep}' with the central gateway node; refresh an old endpoint with kubectl -n ${ns} delete pod -l app=submariner-gateway" ;;
     esac
+    # The tunnel must run through the LoadBalancer address, the only peer the firewall accepts.
+    using="$(kubectl -n "$ns" get gateways.submariner.io -o jsonpath="{range .items[?(@.status.haStatus==\"active\")]}{range .status.connections[?(@.endpoint.cluster_id==\"${central_id}\")]}{.usingIP}{end}{end}" 2>/dev/null)"
+    if [[ -n "$CENTRAL_GATEWAY_IP" && "$using" == "$CENTRAL_GATEWAY_IP" ]]; then
+      pass "tunnel through the central gateway address" "$using"
+    else
+      fail "tunnel through the central gateway address" "${using:-none}, expected ${CENTRAL_GATEWAY_IP:-unset}; recreate the gateway pod to rerun NAT discovery: kubectl -n ${ns} delete pod -l app=submariner-gateway"
+    fi
   fi
   remote_cidrs="$(kubectl -n "$ns" get endpoints.submariner.io -o jsonpath='{range .items[*]}{.spec.cluster_id}{" "}{.spec.subnets}{"\n"}{end}' 2>/dev/null \
     | awk -v me="$local_id" '$1 != me {print $2}' | tr -d '[]"' | tr ',' '\n' | sed '/^$/d' | sort -u)"
@@ -305,6 +324,7 @@ stage_health() {
     fail "systemd-networkd keeps foreign routes" "re-run setup-microk8s.sh"
   fi
   check_route_watchdog
+  check_hub_firewall
   # The worker's export must be Ready, that is, published to the broker. Imports and DNS answer from
   # local copies when publishing fails, so the DNS check below does not detect it.
   exports="$(kubectl -n federation-z get serviceexports.multicluster.x-k8s.io \
