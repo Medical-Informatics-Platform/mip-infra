@@ -127,6 +127,7 @@ The [Mend Renovate GitHub App](https://github.com/apps/renovate) opens PRs on it
 - **Submariner charts**, the **ECK/Elastic stack** (annotated `version:`/`tag:` keys in `common/monitoring/eck/values.yaml`, grouped into one PR), and the **HAProxy ingress controller image**.
 - **yq/kustomize CI binaries**: version and SHA256 checksum are bumped together (checksum resolved from the GitHub release assets).
 
+Renovate also updates the images of the Submariner gateway-node DaemonSets (`common/submariner/operator/gateway-*.yaml`). For `alpine/kubectl` it opens patch and digest updates only: the watchdog's kubectl must stay within one minor version of the central API server, so bump its minor version by hand together with the cluster.
 
 ### Dependabot — GitHub Actions only
 

@@ -103,6 +103,10 @@ kubectl -n submariner-operator exec ds/submariner-gateway -- sh -c 'ip rule show
 
 The operator Application syncs with `prune: false`; removing the manifest from git leaves the DaemonSet and the file in place.
 
+`operator/gateway-route-watchdog.yaml` adds the DaemonSet `submariner-gateway-route-watchdog`, scheduled on the same label. The route agent does not re-add a route it has already installed, and the networkd drop-in prevents only one cause of loss. On the node of the active gateway, the watchdog compares table 150 with the subnets of all remote Endpoints every minute. After two failed checks in a row, it deletes the route agent pod on that node, at most once per 15 minutes. Each failed check is logged with the table content (`kubectl -n submariner-operator logs ds/submariner-gateway-route-watchdog`). `check-central.sh` reports the restarts of the last 7 days.
+
+The pod uses the host network to read the routing tables. It opens no port, has no capabilities, runs as non-root with a read-only root filesystem and uses a one-hour projected token. Apply its Role in `base/mip-infrastructure/rbac/submariner-rbac.yaml` before the sync, like the other out-of-band RBAC. The image `alpine/kubectl` is pinned by digest and must stay within kubectl's version skew of the API server. Update the tag and digest together.
+
 ## Verification
 
 `deployments/hybrid/federations/federation-Z/enrollment/check-central.sh` runs the checks below and the ones remote nodes depend on, read-only.

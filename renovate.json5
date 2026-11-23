@@ -24,10 +24,12 @@
   // Built-in managers relied on:
   //  - kustomize: Submariner helmCharts block (common/submariner/operator)
   //  - kubernetes: HAProxy ingress controller image, exaflow worker image on remote nodes,
-  //    kubectl image of the notebook RBAC reconciler, git image of notebook-examples-sync
+  //    kubectl image of the notebook RBAC reconciler, git image of notebook-examples-sync,
+  //    images of the Submariner gateway-node DaemonSets (networkd drop-in, route watchdog)
   kubernetes: {
     managerFilePatterns: [
       '/^common/haproxy-ingress/manifests/.+\\.yaml$/',
+      '/^common/submariner/operator/gateway-.+\\.yaml$/',
       '/^common/notebook-operator/manifests/.+\\.yaml$/',
       '/^deployments/hybrid/federations/.+/remote-node/exaflow-worker/.+\\.yaml$/',
       '/^deployments/shared-apps/mip-stack/notebook-examples/.+\\.yaml$/',
@@ -145,6 +147,9 @@
   ],
 
   packageRules: [
+    // The route watchdog's kubectl must stay within one minor version of the central API server.
+    // Patch and digest updates only; bump the minor by hand with the cluster.
+    { matchPackageNames: ['alpine/kubectl'], matchUpdateTypes: ['major', 'minor'], enabled: false },
     // Git commits carry no release timestamp for minimumReleaseAge, and the review of the PR is
     // the gate for the pinned notebook examples anyway.
     { matchDepNames: ['mip-examples'], minimumReleaseAge: null },

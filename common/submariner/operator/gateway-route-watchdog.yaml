@@ -1,0 +1,162 @@
+---
+# Restarts the route agent when the gateway node's policy routing is incomplete. The route agent
+# installs the rule "from all lookup 150" and one table-150 route per remote CIDR when the node becomes
+# the gateway. It does not re-add a route it has already installed. Without them, the gateway health
+# check fails and Lighthouse stops serving remote records. The networkd drop-in
+# (gateway-node-networkd.yaml) prevents one known cause; this DaemonSet covers the others.
+#
+# Every minute, on the node of the active gateway, the pod compares table 150 with the subnets of all
+# remote Endpoints. After two failed checks in a row, it deletes the route agent pod on its node, and
+# the new pod re-installs the rule and routes. At most one restart per 15 minutes. It does nothing when
+# the API returns incomplete data or the local gateway is passive. Each failed check is logged with
+# the table content: kubectl -n submariner-operator logs ds/submariner-gateway-route-watchdog
+#
+# Security: uses the host network only to read the routing tables, which needs no capabilities. Opens
+# no port. Non-root, no privilege escalation, no capabilities, read-only root filesystem, RuntimeDefault
+# seccomp, no host path, no service links. One-hour projected token. Permissions: Role
+# submariner-gateway-route-watchdog in base/mip-infrastructure/rbac/submariner-rbac.yaml.
+#
+# Image: alpine/kubectl (the script uses kubectl, busybox sh and busybox ip). Pinned by index digest
+# to the newest tag within kubectl's version skew of the central API server (1.35). Update the tag and
+# digest together.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: submariner-gateway-route-watchdog
+  namespace: submariner-operator
+automountServiceAccountToken: false
+---
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: submariner-gateway-route-watchdog
+  namespace: submariner-operator
+  labels:
+    app: submariner-gateway-route-watchdog
+spec:
+  selector:
+    matchLabels:
+      app: submariner-gateway-route-watchdog
+  updateStrategy:
+    type: RollingUpdate
+  template:
+    metadata:
+      labels:
+        app: submariner-gateway-route-watchdog
+    spec:
+      serviceAccountName: submariner-gateway-route-watchdog
+      automountServiceAccountToken: false
+      enableServiceLinks: false
+      hostNetwork: true
+      nodeSelector:
+        submariner.io/gateway: "true"
+      tolerations:
+        - operator: Exists
+      terminationGracePeriodSeconds: 5
+      securityContext:
+        runAsUser: 65534
+        runAsGroup: 65534
+        runAsNonRoot: true
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: watchdog
+          image: docker.io/alpine/kubectl:1.36.4@sha256:a2cd8ee034cbe04d651e565b3373299b31921de5c2af86490559e21b3e197808
+          env:
+            - name: NODE_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: spec.nodeName
+            - name: HOME
+              value: /tmp
+          command:
+            - /bin/sh
+            - -c
+            - |
+              set -u
+              ns=submariner-operator
+              interval=60
+              needed=2
+              cooldown=900
+              bad=0
+              last=0
+              log() { echo "$(date -u +%Y-%m-%dT%H:%M:%SZ) $*"; }
+              trap 'exit 0' TERM INT
+              log "watching the policy routing of ${NODE_NAME}"
+              jp_subnets='{range .items[*]}{.spec.cluster_id}{" "}{.spec.subnets}{"\n"}{end}'
+              while :; do
+                # The Gateway object is named after its node. Only the active gateway needs table 150.
+                ha="$(kubectl -n "$ns" get gateways.submariner.io "$NODE_NAME" \
+                  -o jsonpath='{.status.haStatus}' 2>/dev/null)"
+                me="$(kubectl -n "$ns" get submariners.submariner.io \
+                  -o jsonpath='{.items[0].spec.clusterID}' 2>/dev/null)"
+                want="$(kubectl -n "$ns" get endpoints.submariner.io -o jsonpath="$jp_subnets" 2>/dev/null \
+                  | awk -v me="$me" '$1 != me {print $2}' | tr -d '[]"' | tr ',' '\n' | sed '/^$/d' | sort -u)"
+                # Never restart on an API error or a passive gateway.
+                if [ "$ha" != active ] || [ -z "$me" ] || [ -z "$want" ]; then
+                  bad=0
+                else
+                  have="$(ip route show table 150 2>/dev/null | awk '{print $1}')"
+                  missing=""
+                  for c in $want; do
+                    printf '%s\n' "$have" | grep -qx "$c" || missing="${missing} ${c}"
+                  done
+                  rule=0
+                  ip rule show | grep -q 'lookup 150' && rule=1
+                  if [ "$rule" = 1 ] && [ -z "$missing" ]; then
+                    [ "$bad" -gt 0 ] && log "policy routing complete again"
+                    bad=0
+                  else
+                    bad=$((bad + 1))
+                    table="$(ip route show table 150 2>/dev/null | tr '\n' ';')"
+                    log "policy routing incomplete (${bad}/${needed}): rule=${rule}" \
+                      "missing:${missing:- none}; table 150: ${table}"
+                    now="$(date +%s)"
+                    if [ "$bad" -ge "$needed" ] && [ $((now - last)) -ge "$cooldown" ]; then
+                      log "restarting the route agent on ${NODE_NAME}"
+                      kubectl -n "$ns" delete pod -l app=submariner-routeagent \
+                        --field-selector "spec.nodeName=${NODE_NAME}" --wait=false && last="$now"
+                      bad=0
+                    fi
+                  fi
+                fi
+                sleep "$interval" & wait $!
+              done
+          securityContext:
+            readOnlyRootFilesystem: true
+            allowPrivilegeEscalation: false
+            privileged: false
+            capabilities:
+              drop: [ALL]
+          resources:
+            requests:
+              cpu: 5m
+              memory: 32Mi
+            limits:
+              memory: 128Mi
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+            - name: api-token
+              mountPath: /var/run/secrets/kubernetes.io/serviceaccount
+              readOnly: true
+      volumes:
+        - name: tmp
+          emptyDir:
+            sizeLimit: 16Mi
+        - name: api-token
+          projected:
+            sources:
+              - serviceAccountToken:
+                  path: token
+                  expirationSeconds: 3600
+              - configMap:
+                  name: kube-root-ca.crt
+                  items:
+                    - key: ca.crt
+                      path: ca.crt
+              - downwardAPI:
+                  items:
+                    - path: namespace
+                      fieldRef:
+                        fieldPath: metadata.namespace

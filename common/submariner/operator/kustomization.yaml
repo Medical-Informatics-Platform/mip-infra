@@ -13,6 +13,7 @@ resources:
   - gateway-loadbalancer-ip.yaml
   - broker-credentials.yaml
   - gateway-node-networkd.yaml
+  - gateway-route-watchdog.yaml
 patches:
   - target:
       group: rbac.authorization.k8s.io

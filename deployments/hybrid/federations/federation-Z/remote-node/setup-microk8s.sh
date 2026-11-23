@@ -2,8 +2,9 @@
 # Installs single-node MicroK8s with the pod and service CIDRs of this remote
 # node, installs the Calico API server that Submariner needs to manage IP
 # pools, pins Calico's node IP detection and MicroK8s' certificate handling so
-# that the Submariner tunnel interface does not disturb them, and labels the
-# node as the Submariner gateway.
+# that the Submariner tunnel interface does not disturb them, installs the
+# watchdog that restores the gateway's policy routing, and labels the node as
+# the Submariner gateway.
 #
 # Usage:
 #   sudo ./setup-microk8s.sh
@@ -224,7 +225,8 @@ fi
 # rules it does not own every time it starts, and unattended upgrades restart it
 # through needrestart (openssl update, 2026-09-30); the route agent does not put
 # them back and the connection degrades to "error". Keep networkd away from
-# foreign routes. Effective at its next start; nothing is restarted here.
+# foreign routes and rules. Effective at its next start; nothing is restarted
+# here. This does not cover every loss: see the route watchdog below.
 networkd_dropin=/etc/systemd/networkd.conf.d/10-submariner-foreign-routes.conf
 networkd_dropin_want=$'[Network]\nManageForeignRoutes=no\nManageForeignRoutingPolicyRules=no'
 if [[ -d /etc/systemd ]] && [[ "$(cat "$networkd_dropin" 2>/dev/null)" != "$networkd_dropin_want" ]]; then
@@ -232,6 +234,133 @@ if [[ -d /etc/systemd ]] && [[ "$(cat "$networkd_dropin" 2>/dev/null)" != "$netw
   printf '%s\n' "$networkd_dropin_want" >"$networkd_dropin"
   chmod 0644 "$networkd_dropin"
   log "systemd-networkd keeps foreign routes and rules (${networkd_dropin}); effective at its next start"
+fi
+
+# --- route watchdog ------------------------------------------------------------
+# With a DHCP uplink, systemd-networkd removes the interface address and adds it
+# again when it restarts, for example after an unattended upgrade. The kernel
+# drops every route through an interface that loses its last address, table 150
+# included, and nothing puts those routes back. The drop-in above does not
+# prevent this. No KeepConfiguration value avoids it on Ubuntu 24.04 (systemd
+# 255.4); dhcp-on-stop, dhcp and yes do not.
+#
+# Same logic as the route watchdog of the central cluster. Every
+# minute it compares table 150 with the subnets of the remote Endpoints. After
+# two failed checks in a row it deletes the route agent pod, and the new pod
+# re-installs the rule and the routes; at most one restart per 15 minutes. It
+# does nothing while the API does not answer or this node is not the active
+# gateway. Log: journalctl -u submariner-route-watchdog
+#
+# It runs without root and without capabilities: reading the routing tables
+# needs none, and its API access is the MicroK8s admin kubeconfig, which the
+# MicroK8s group may read. It opens no port.
+watchdog_bin=/usr/local/sbin/submariner-route-watchdog
+watchdog_unit=/etc/systemd/system/submariner-route-watchdog.service
+watchdog_kubeconfig=/var/snap/microk8s/current/credentials/client.config
+watchdog_group="$(stat -c %G "$watchdog_kubeconfig")"
+watchdog_bin_want="$(cat <<'WATCHDOG'
+#!/usr/bin/env bash
+# Written by setup-microk8s.sh. Restarts the Submariner route agent when the policy routing of
+# this gateway node is incomplete: the rule "from all lookup 150" and one table-150 route per
+# subnet of the remote Endpoints. Log: journalctl -u submariner-route-watchdog
+set -u
+kubectl=(/snap/microk8s/current/kubectl --kubeconfig /var/snap/microk8s/current/credentials/client.config --request-timeout=15s)
+ns=submariner-operator
+interval=60
+needed=2
+cooldown=900
+bad=0
+last=0
+node="$(hostname | tr '[:upper:]' '[:lower:]')"
+jp_subnets='{range .items[*]}{.spec.cluster_id}{" "}{.spec.subnets}{"\n"}{end}'
+trap 'exit 0' TERM INT
+echo "watching the policy routing of ${node}"
+while :; do
+  # The Gateway object is named after its node. Only the active gateway needs table 150.
+  ha="$("${kubectl[@]}" -n "$ns" get gateways.submariner.io "$node" -o jsonpath='{.status.haStatus}' 2>/dev/null)"
+  me="$("${kubectl[@]}" -n "$ns" get submariners.submariner.io -o jsonpath='{.items[0].spec.clusterID}' 2>/dev/null)"
+  want="$("${kubectl[@]}" -n "$ns" get endpoints.submariner.io -o jsonpath="$jp_subnets" 2>/dev/null \
+    | awk -v me="$me" '$1 != me {print $2}' | tr -d '[]"' | tr ',' '\n' | sed '/^$/d' | sort -u)"
+  # Never restart on an API error or a passive gateway.
+  if [ "$ha" != active ] || [ -z "$me" ] || [ -z "$want" ]; then
+    bad=0
+  else
+    have="$(ip route show table 150 2>/dev/null | awk '{print $1}')"
+    missing=""
+    for c in $want; do
+      printf '%s\n' "$have" | grep -qx "$c" || missing="${missing} ${c}"
+    done
+    rule=0
+    ip rule show | grep -q 'lookup 150' && rule=1
+    if [ "$rule" = 1 ] && [ -z "$missing" ]; then
+      [ "$bad" -gt 0 ] && echo "policy routing complete again"
+      bad=0
+    else
+      bad=$((bad + 1))
+      table="$(ip route show table 150 2>/dev/null | tr '\n' ';')"
+      echo "policy routing incomplete (${bad}/${needed}): rule=${rule} missing:${missing:- none}; table 150: ${table}"
+      now="$(date +%s)"
+      if [ "$bad" -ge "$needed" ] && [ $((now - last)) -ge "$cooldown" ]; then
+        echo "restarting the route agent on ${node}"
+        "${kubectl[@]}" -n "$ns" delete pod -l app=submariner-routeagent \
+          --field-selector "spec.nodeName=${node}" --wait=false && last="$now"
+        bad=0
+      fi
+    fi
+  fi
+  sleep "$interval" &
+  wait $!
+done
+WATCHDOG
+)"
+watchdog_unit_want="[Unit]
+Description=Restart the Submariner route agent when the gateway policy routing is incomplete (written by setup-microk8s.sh)
+After=snap.microk8s.daemon-kubelite.service
+
+[Service]
+ExecStart=${watchdog_bin}
+Restart=always
+RestartSec=30
+DynamicUser=yes
+SupplementaryGroups=${watchdog_group}
+Environment=HOME=/tmp
+ProtectHome=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK
+RestrictNamespaces=yes
+RestrictRealtime=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+CapabilityBoundingSet=
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallErrorNumber=EPERM
+MemoryMax=192M
+
+[Install]
+WantedBy=multi-user.target"
+watchdog_changed=false
+if [[ "$(cat "$watchdog_bin" 2>/dev/null)" != "$watchdog_bin_want" ]]; then
+  printf '%s\n' "$watchdog_bin_want" >"$watchdog_bin"
+  watchdog_changed=true
+fi
+chmod 0755 "$watchdog_bin"
+if [[ "$(cat "$watchdog_unit" 2>/dev/null)" != "$watchdog_unit_want" ]]; then
+  printf '%s\n' "$watchdog_unit_want" >"$watchdog_unit"
+  chmod 0644 "$watchdog_unit"
+  systemctl daemon-reload
+  watchdog_changed=true
+fi
+systemctl -q enable submariner-route-watchdog.service
+if [[ "$watchdog_changed" == true ]] || ! systemctl -q is-active submariner-route-watchdog.service; then
+  systemctl restart submariner-route-watchdog.service
+  log "Route watchdog running (unit submariner-route-watchdog): restarts the route agent when table 150 loses its routes"
 fi
 
 # --- gateway label -----------------------------------------------------------
@@ -249,6 +378,7 @@ MicroK8s is ready.
   Node:          ${node_name}
   Pod CIDR:      ${IPv4_CLUSTER_CIDR}
   Service CIDR:  ${IPv4_SERVICE_CIDR}
+  Route watchdog: $(systemctl is-active submariner-route-watchdog.service 2>/dev/null || echo inactive)
   Calico:        ${CALICO_VERSION:-not installed}
   Helm:          $(microk8s.helm3 version --short 2>/dev/null || echo unavailable)
 

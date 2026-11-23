@@ -5,6 +5,9 @@
 #                                  reachability, kernel modules, CIDR overlap
 #   ./preflight.sh --stage join    join stage: credential files, broker TLS and
 #                                  token, MicroK8s settings, gateway label, tool versions
+#   ./preflight.sh --stage health  joined node: connection to the central cluster,
+#                                  gateway policy routing, networkd drop-in, route
+#                                  watchdog, clusterset DNS
 #
 # Prints one line per check (PASS, WARN or FAIL) and exits non-zero when any
 # check fails. Run as the user who will run join-submariner.sh.
@@ -25,13 +28,13 @@ STAGE=install
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --stage) STAGE="${2:-}"; shift 2 ;;
-    -h|--help) sed -n '2,22p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    -h|--help) sed -n '2,23p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
     *) echo "unknown argument: $1" >&2; exit 2 ;;
   esac
 done
 case "$STAGE" in
-  install|join) ;;
-  *) echo "--stage must be install or join" >&2; exit 2 ;;
+  install|join|health) ;;
+  *) echo "--stage must be install, join or health" >&2; exit 2 ;;
 esac
 
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -53,6 +56,14 @@ pass() { printf 'PASS  %-40s %s\n' "$1" "${2:-}"; }
 warn() { printf 'WARN  %-40s %s\n' "$1" "${2:-}"; warns=$((warns + 1)); }
 fail() { printf 'FAIL  %-40s %s\n' "$1" "${2:-}"; fails=$((fails + 1)); }
 http_code() { curl -sSk --max-time 8 -o /dev/null -w '%{http_code}' "$@" 2>/dev/null || echo 000; }
+check_route_watchdog() {
+  if systemctl -q is-enabled submariner-route-watchdog.service 2>/dev/null \
+    && systemctl -q is-active submariner-route-watchdog.service 2>/dev/null; then
+    pass "route watchdog" "unit submariner-route-watchdog"
+  else
+    fail "route watchdog" "re-run setup-microk8s.sh; without it the connection stays in error after a systemd-networkd restart until the route agent is restarted by hand"
+  fi
+}
 
 [[ -n "$BROKER_SERVER" ]] || { echo "BROKER_SERVER is empty and could not be read from ${values_file}" >&2; exit 2; }
 echo "Stage: ${STAGE}    Broker: ${BROKER_SERVER}"
@@ -245,14 +256,69 @@ stage_join() {
   else
     fail "systemd-networkd keeps foreign routes" "re-run setup-microk8s.sh; a networkd restart (unattended upgrades) deletes the gateway's policy routing and the connection turns to error"
   fi
+  check_route_watchdog
   have="$(subctl version 2>/dev/null | grep -oE 'v[0-9]+\.[0-9]+\.[0-9]+' | head -1)"
   [[ "$have" == "v${SUBMARINER_VERSION}" ]] && pass "subctl version" "$have" || fail "subctl version" "${have:-missing}; expected v${SUBMARINER_VERSION}"
   command -v helm >/dev/null 2>&1 && pass "helm available" "$(helm version --short 2>/dev/null)" || fail "helm available" "run setup-microk8s.sh (creates the helm alias)"
 }
 
+# Health of a joined node, as seen from the node. enrollment/check-central.sh checks the central side.
+# Each gateway reports only its own pings, so the two sides can differ.
+stage_health() {
+  if ! kubectl get nodes >/dev/null 2>&1; then
+    fail "kubectl reaches MicroK8s" "run 'newgrp microk8s' or check ~/.kube/config"
+    return
+  fi
+  local ns=submariner-operator local_id central_id central_ep status remote_cidrs routing missing c dropin
+  local_id="$(kubectl -n "$ns" get submariners.submariner.io -o jsonpath='{.items[0].spec.clusterID}' 2>/dev/null)"
+  central_id="$(kubectl -n "$ns" get endpoints.submariner.io -o jsonpath='{range .items[*]}{.spec.cluster_id}{" "}{.spec.subnets}{"\n"}{end}' 2>/dev/null \
+    | grep -F "\"${CENTRAL_POD_CIDR}\"" | awk '{print $1}' | head -1)"
+  if [[ -z "$central_id" ]]; then
+    fail "central endpoint known" "no Endpoint with ${CENTRAL_POD_CIDR}; check the gateway log for broker errors"
+  else
+    central_ep="$(kubectl -n "$ns" get endpoints.submariner.io -o jsonpath="{range .items[?(@.spec.cluster_id==\"${central_id}\")]}{.spec.hostname} {.spec.private_ip} since {.metadata.creationTimestamp}{end}" 2>/dev/null)"
+    pass "central endpoint known" "${central_id}: ${central_ep}"
+    status="$(kubectl -n "$ns" get gateways.submariner.io -o jsonpath="{range .items[?(@.status.haStatus==\"active\")]}{range .status.connections[?(@.endpoint.cluster_id==\"${central_id}\")]}{.status} {.statusMessage}{end}{end}" 2>/dev/null)"
+    case "$status" in
+      connected*) pass "connection to the central cluster" "connected" ;;
+      error*) fail "connection to the central cluster" "${status}; SAs up: see policy routing below, otherwise the tunnel (README, Troubleshooting)" ;;
+      *) fail "connection to the central cluster" "${status:-none}; if it stays connecting, compare '${central_ep}' with the central gateway node; refresh an old endpoint with kubectl -n ${ns} delete pod -l app=submariner-gateway" ;;
+    esac
+  fi
+  remote_cidrs="$(kubectl -n "$ns" get endpoints.submariner.io -o jsonpath='{range .items[*]}{.spec.cluster_id}{" "}{.spec.subnets}{"\n"}{end}' 2>/dev/null \
+    | awk -v me="$local_id" '$1 != me {print $2}' | tr -d '[]"' | tr ',' '\n' | sed '/^$/d' | sort -u)"
+  routing="$(ip route show table 150 2>/dev/null | awk '{print $1}')"
+  missing=""
+  for c in $remote_cidrs; do
+    grep -qx "$c" <<<"$routing" || missing="${missing} ${c}"
+  done
+  if ip rule show | grep -q 'lookup 150' && [[ -n "$remote_cidrs" && -z "$missing" ]]; then
+    pass "gateway policy routing" "rule lookup 150, table 150 covers $(wc -w <<<"$remote_cidrs" | tr -d ' ') remote CIDRs"
+  else
+    fail "gateway policy routing" "rule or routes missing:${missing:- rule}; kubectl -n ${ns} delete pod -l app=submariner-routeagent"
+  fi
+  dropin=/etc/systemd/networkd.conf.d/10-submariner-foreign-routes.conf
+  if grep -qs '^ManageForeignRoutes=no' "$dropin" && grep -qs '^ManageForeignRoutingPolicyRules=no' "$dropin"; then
+    pass "systemd-networkd keeps foreign routes" "$dropin"
+  else
+    fail "systemd-networkd keeps foreign routes" "re-run setup-microk8s.sh"
+  fi
+  check_route_watchdog
+  if kubectl -n federation-z get pod exaflow-localworker-0 >/dev/null 2>&1; then
+    if kubectl -n federation-z exec exaflow-localworker-0 -- getent hosts exaflow-aggregation-service.federation-z.svc.clusterset.local >/dev/null 2>&1; then
+      pass "clusterset DNS from the worker" "exaflow-aggregation-service resolves"
+    else
+      fail "clusterset DNS from the worker" "does not resolve; Lighthouse serves the central records only while the connection is connected"
+    fi
+  else
+    warn "clusterset DNS from the worker" "no worker pod (step 8 not done)"
+  fi
+}
+
 case "$STAGE" in
   install) stage_install ;;
   join) stage_join ;;
+  health) stage_health ;;
 esac
 
 echo

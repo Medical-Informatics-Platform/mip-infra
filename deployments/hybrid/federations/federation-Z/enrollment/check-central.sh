@@ -5,13 +5,14 @@
 # WARN or FAIL line per check and exits non-zero when a check fails.
 #
 # Checks: gateway node label, gateway DaemonSet and Gateway object, gateway node
-# policy routing and the networkd drop-in DaemonSet, leftover uninstall
-# DaemonSets, Calico API server and IP pools, Calico tiers, the broker
-# registration of the central cluster, PSK and broker credentials, no Secrets
-# in the broker namespace, the clusterset.local forward in the cluster CoreDNS,
-# per-remote admission policies, hybrid namespace label, the policy
-# Applications, the API server egress pins of the network-policy charts
-# (apiServer.cidrs), and subctl (when installed).
+# policy routing against the remote CIDRs, gateway connections, the networkd
+# drop-in and route watchdog DaemonSets, leftover uninstall DaemonSets, Calico
+# API server and IP pools, Calico tiers, the broker registration of the central
+# cluster, PSK and broker credentials, no Secrets in the broker namespace, the
+# clusterset.local forward in the cluster CoreDNS, per-remote admission
+# policies, hybrid namespace label, the policy Applications, the API server
+# egress pins of the network-policy charts (apiServer.cidrs), and subctl (when
+# installed).
 #
 # Parameters (environment variables or key=value arguments):
 #   FEDERATION_NS      default federation-z
@@ -28,7 +29,7 @@ set -uo pipefail
 for arg in "$@"; do
   case "$arg" in
     *=*) export "${arg?}" ;;
-    -h|--help) sed -n '2,22p' "$0"; exit 0 ;;
+    -h|--help) sed -n '2,23p' "$0"; exit 0 ;;
     *) printf 'ERROR: unknown argument %s (use KEY=value)\n' "$arg" >&2; exit 2 ;;
   esac
 done
@@ -88,16 +89,39 @@ fi
 # systemd-networkd restart deletes it and every connection degrades to "error" with the SAs up. The
 # DaemonSet submariner-gateway-node-config keeps networkd away from foreign routes on the gateway node.
 gw_pod="$(kc -n "$OPERATOR_NS" get pods -l app=submariner-gateway --field-selector status.phase=Running -o jsonpath='{.items[0].metadata.name}' 2>/dev/null)"
+local_id="$(kc -n "$OPERATOR_NS" get submariners.submariner.io -o jsonpath='{.items[0].spec.clusterID}' 2>/dev/null)"
+remote_cidrs="$(kc -n "$OPERATOR_NS" get endpoints.submariner.io -o jsonpath='{range .items[*]}{.spec.cluster_id}{" "}{.spec.subnets}{"\n"}{end}' 2>/dev/null \
+  | awk -v me="$local_id" '$1 != me {print $2}' | tr -d '[]"' | tr ',' '\n' | sed '/^$/d' | sort -u)"
 if [[ -z "$gw_pod" ]]; then
   fail "gateway node policy routing" "no running gateway pod"
 else
-  rules="$(kc -n "$OPERATOR_NS" exec "$gw_pod" -c submariner-gateway -- sh -c 'ip rule show | grep -c "lookup 150"; ip route show table 150 | grep -c .' 2>/dev/null | tr '\n' ' ')"
-  read -r rule_count route_count <<<"$rules"
-  if [[ "${rule_count:-0}" -ge 1 && "${route_count:-0}" -ge 1 ]]; then
-    pass "gateway node policy routing" "rule lookup 150, ${route_count} routes in table 150"
+  routing="$(kc -n "$OPERATOR_NS" exec "$gw_pod" -c submariner-gateway -- sh -c 'ip rule show | grep -c "lookup 150"; ip route show table 150' 2>/dev/null)"
+  rule_count="$(head -1 <<<"$routing")"
+  missing=""
+  for c in $remote_cidrs; do
+    tail -n +2 <<<"$routing" | awk '{print $1}' | grep -qx "$c" || missing="${missing} ${c}"
+  done
+  if [[ "${rule_count:-0}" -ge 1 && -n "$remote_cidrs" && -z "$missing" ]]; then
+    pass "gateway node policy routing" "rule lookup 150, table 150 covers $(wc -w <<<"$remote_cidrs" | tr -d ' ') remote CIDRs"
   else
-    fail "gateway node policy routing" "rule or table 150 missing on the gateway node; kubectl -n ${OPERATOR_NS} delete pod -l app=submariner-routeagent --field-selector spec.nodeName=<gateway node>"
+    fail "gateway node policy routing" "rule count ${rule_count:-0}, missing in table 150:${missing:- none}; kubectl -n ${OPERATOR_NS} delete pod -l app=submariner-routeagent --field-selector spec.nodeName=<gateway node>"
   fi
+fi
+# Connections of the active gateway, as seen from this cluster. Each side pings from its own address
+# and reports only its own result, so the remote side can show a different status.
+conns="$(kc -n "$OPERATOR_NS" get gateways.submariner.io -o jsonpath='{range .items[?(@.status.haStatus=="active")]}{range .status.connections[*]}{.endpoint.cluster_id}={.status}{" "}{end}{end}' 2>/dev/null)"
+bad="$(tr ' ' '\n' <<<"$conns" | sed '/^$/d' | grep -v '=connected$' | tr '\n' ' ')"
+if [[ -n "$conns" && -z "$bad" ]]; then
+  pass "gateway connections" "$conns"
+else
+  fail "gateway connections" "${bad:-no connections}; error: see policy routing above; connecting: tunnel down or the remote holds an old endpoint of this cluster (remote-node README, Troubleshooting)"
+fi
+wd="$(kc -n "$OPERATOR_NS" get daemonset submariner-gateway-route-watchdog -o jsonpath='{.status.desiredNumberScheduled}/{.status.numberReady}' 2>/dev/null)"
+if [[ -n "$wd" && "${wd%/*}" == "${wd#*/}" && "${wd%/*}" != 0 ]]; then
+  restarts="$(kc -n "$OPERATOR_NS" logs ds/submariner-gateway-route-watchdog --since=168h 2>/dev/null | grep -c 'restarting the route agent')"
+  pass "route watchdog DaemonSet" "desired/ready ${wd}, route agent restarts in the last 7 days: ${restarts:-0}"
+else
+  fail "route watchdog DaemonSet" "desired/ready ${wd:-not found}; apply submariner-rbac.yaml and sync the submariner-operator Application (common/submariner/operator/gateway-route-watchdog.yaml)"
 fi
 nc="$(kc -n "$OPERATOR_NS" get daemonset submariner-gateway-node-config -o jsonpath='{.status.desiredNumberScheduled}/{.status.numberReady}' 2>/dev/null)"
 if [[ -n "$nc" && "${nc%/*}" == "${nc#*/}" && "${nc%/*}" != 0 ]]; then

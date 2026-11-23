@@ -403,3 +403,37 @@ subjects:
   - kind: ServiceAccount
     name: submariner-gateway
     namespace: submariner-operator
+---
+# Gateway route watchdog (common/submariner/operator/gateway-route-watchdog.yaml). Reads the Gateway,
+# Submariner and Endpoint objects and deletes the route agent pod on its own node. RBAC cannot limit
+# delete to a label or a node, so it covers all pods in this namespace; the script selects only the
+# route agent on its own node.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: submariner-gateway-route-watchdog
+  namespace: submariner-operator
+rules:
+  - apiGroups: [submariner.io]
+    resources: [gateways]
+    verbs: [get]
+  - apiGroups: [submariner.io]
+    resources: [submariners, endpoints]
+    verbs: [list]
+  - apiGroups: ['']
+    resources: [pods]
+    verbs: [list, delete]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: submariner-gateway-route-watchdog
+  namespace: submariner-operator
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: submariner-gateway-route-watchdog
+subjects:
+  - kind: ServiceAccount
+    name: submariner-gateway-route-watchdog
+    namespace: submariner-operator

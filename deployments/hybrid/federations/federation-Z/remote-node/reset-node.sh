@@ -5,8 +5,9 @@
 # Removes: the microk8s snap and its data, the helm and kubectl snaps when
 # present (MicroK8s provides both), subctl,
 # the MicroK8s kubeconfig and Helm caches of the invoking user, the persisted
-# cluster ID, leftover credential files in the invoking user's home, and the
-# Submariner and Calico network state (interfaces, IPsec state, policy routes).
+# cluster ID, leftover credential files in the invoking user's home, the route
+# watchdog, and the Submariner and Calico network state (interfaces, IPsec state,
+# policy routes).
 # Remaining kernel state (iptables chains, ipsets) is cleared by a reboot.
 #
 # Usage:
@@ -93,6 +94,13 @@ if [[ -n "$user_home" ]]; then
   done < <(find "$user_home" -maxdepth 3 -type f \
              \( -name 'broker-token.txt' -o -name 'broker-ca-base64.txt' -o -name 'broker-psk.txt' \
                 -o -name 'local-values.yaml' -o -name 'secrets-values.yaml' -o -name 'broker-info.subm*' \) -print0)
+fi
+
+if [[ -f /etc/systemd/system/submariner-route-watchdog.service ]]; then
+  log "Removing the route watchdog (unit submariner-route-watchdog)"
+  systemctl disable --now submariner-route-watchdog.service >/dev/null 2>&1 || true
+  rm -f /etc/systemd/system/submariner-route-watchdog.service /usr/local/sbin/submariner-route-watchdog
+  systemctl daemon-reload
 fi
 
 log "Clearing Submariner and Calico network state"
