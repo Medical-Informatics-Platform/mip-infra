@@ -9,7 +9,7 @@
 targetNamespace: ''
 
 # Remote nodes of the federation, one entry per node:
-#   - podCidr: 192.0.2.0/24        # pod network of the remote cluster
+#   - podCidr: 192.0.2.0/24  # pod network of the remote cluster
 #     serviceCidr: 198.51.100.0/24  # service network of the remote cluster
 # An empty list renders no policy.
 remoteNodes: []
@@ -25,7 +25,6 @@ order: 200
 # pod of the cluster, so a network that is too wide (0.0.0.0/0, 10.0.0.0/8)
 # would cut traffic that has nothing to do with remote clusters.
 minPrefixLength: 16
-
 # Ports of the exaflow components (values of the exaflow chart). The controller
 # HTTP API and the Flower server are deliberately absent: remote networks do not
 # reach them.

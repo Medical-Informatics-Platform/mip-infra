@@ -524,7 +524,8 @@ spec:
     - name: labels
       expression: 'has(object.metadata.labels) ? object.metadata.labels : {}'
     - name: annotations
-      expression: 'has(object.metadata.annotations) ? object.metadata.annotations : {}'
+      expression: 'has(object.metadata.annotations) ? object.metadata.annotations
+        : {}'
     - name: namespaceKey
       expression: "'lighthouse.submariner.io/sourceNamespace'"
     - name: serviceKey
@@ -534,16 +535,21 @@ spec:
         variables.namespaceKey in variables.labels || variables.serviceKey in variables.labels
     - name: hasAnnotationIdentity
       expression: >-
-        variables.namespaceKey in variables.annotations || variables.serviceKey in variables.annotations
+        variables.namespaceKey in variables.annotations || variables.serviceKey in
+        variables.annotations
     # <namespace>/<service> as the object states it; a missing half stays empty and matches no entry.
     - name: labelExport
       expression: >-
-        (variables.namespaceKey in variables.labels ? variables.labels[variables.namespaceKey] : '')
-        + '/' + (variables.serviceKey in variables.labels ? variables.labels[variables.serviceKey] : '')
+        (variables.namespaceKey in variables.labels ? variables.labels[variables.namespaceKey]
+        : '')
+        + '/' + (variables.serviceKey in variables.labels ? variables.labels[variables.serviceKey]
+        : '')
     - name: annotationExport
       expression: >-
-        (variables.namespaceKey in variables.annotations ? variables.annotations[variables.namespaceKey] : '')
-        + '/' + (variables.serviceKey in variables.annotations ? variables.annotations[variables.serviceKey] : '')
+        (variables.namespaceKey in variables.annotations ? variables.annotations[variables.namespaceKey]
+        : '')
+        + '/' + (variables.serviceKey in variables.annotations ? variables.annotations[variables.serviceKey]
+        : '')
     - name: labelExportAllowed
       expression: '!variables.hasLabelIdentity || variables.labelExport in variables.allowedExports'
     - name: annotationExportAllowed
@@ -557,14 +563,15 @@ spec:
                : (variables.hasLabelIdentity || variables.hasAnnotationIdentity))
             && variables.labelExportAllowed
             && variables.annotationExportAllowed)
-      message: the object publishes a service that is not in the exports recorded for the
-        calling cluster at enrollment
+      message: the object publishes a service that is not in the exports recorded
+        for the calling cluster at enrollment
       messageExpression: >-
         'cluster ' + variables.callerID + ' may not publish '
         + (!variables.labelExportAllowed ? variables.labelExport
             : (!variables.annotationExportAllowed ? variables.annotationExport
                 : 'an object without service name and source namespace'))
-        + '; exports recorded at enrollment: [' + variables.allowedExports.join(', ') + ']'
+        + '; exports recorded at enrollment: [' + variables.allowedExports.join(',
+        ') + ']'
       reason: Forbidden
 ---
 apiVersion: admissionregistration.k8s.io/v1

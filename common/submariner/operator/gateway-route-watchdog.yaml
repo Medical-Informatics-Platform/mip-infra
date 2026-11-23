@@ -49,7 +49,7 @@ spec:
       enableServiceLinks: false
       hostNetwork: true
       nodeSelector:
-        submariner.io/gateway: "true"
+        submariner.io/gateway: 'true'
       tolerations:
         - operator: Exists
       terminationGracePeriodSeconds: 5
