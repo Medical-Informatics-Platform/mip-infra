@@ -11,7 +11,7 @@ metadata:
 spec:
   sources:
     - repoURL: https://github.com/madgik/exaflow
-      targetRevision: e8c15aaf37cc8ade5e2fa4de0bb769f7e2da4dac  # 1.2.1
+      targetRevision: ba7228d60247b36dc5777b46924528b43041d776  # 1.3.0
       path: kubernetes
       helm:
         valueFiles:
