@@ -126,6 +126,7 @@ comply:
 | Keycloak at iam.ebrains.eu | `keycloak.enabled: false` + dummy `keycloak-credentials` (authentication off) |
 | public ingress hosts | ingress disabled in federation/datacatalog profiles; exercised by the haproxy profile instead |
 | interactive `scripts/gen_secrets.sh` | non-interactive `scripts/e2e/ci-secrets.sh` |
+| Redis HA images from `public.ecr.aws` | the same digests from `mirror.gcr.io`, as `public.ecr.aws` rate-limits (429) anonymous CI runners |
 
 ### Running a profile locally
 

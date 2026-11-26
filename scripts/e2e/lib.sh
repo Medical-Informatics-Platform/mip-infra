@@ -81,7 +81,11 @@ install_argo_overlay() {
   # install the overlay (which includes upstream CRDs) first and only then the
   # projects. --server-side because the applicationsets CRD exceeds the 256KB
   # last-applied-configuration annotation limit.
+  # Redis HA pulls redis and haproxy from public.ecr.aws, which rate-limits
+  # (429) anonymous clients such as CI runners. The same digests come from
+  # Google's Docker Hub mirror; argo-setup itself keeps public.ecr.aws.
   kustomize build "$REPO_ROOT/argo-setup/patches" \
+    | sed 's#public\.ecr\.aws/docker/library/#mirror.gcr.io/library/#g' \
     | kubectl apply --server-side --force-conflicts -f -
 }
 
