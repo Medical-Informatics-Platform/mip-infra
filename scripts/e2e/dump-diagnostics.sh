@@ -14,6 +14,22 @@ kubectl -n "$NS" get applications -o wide
 kubectl -n "$NS" get applications -o yaml
 endsection
 
+# Argo CD itself: when one of its pods never gets ready, as in "Wait for Argo CD
+# HA workloads", its events, restarts and logs show why.
+section "namespace $NS: pods / events"
+kubectl -n "$NS" get pods -o wide
+kubectl -n "$NS" get events --sort-by=.lastTimestamp | tail -50
+endsection
+section "namespace $NS: pods not ready (describe + logs, tail 100)"
+for p in $(kubectl -n "$NS" get pods --no-headers \
+             | awk '{split($2, r, "/"); if (r[1] != r[2] || $3 != "Running") print $1}'); do
+  echo "--- pod/$p"
+  kubectl -n "$NS" describe pod "$p"
+  kubectl -n "$NS" logs "$p" --all-containers --prefix --tail=100
+  kubectl -n "$NS" logs "$p" --all-containers --prefix --tail=100 --previous 2>/dev/null
+done
+endsection
+
 for ns in federation-a elastic-system ingress-nginx mip-common-datacatalog \
           metallb-system cert-manager default; do
   kubectl get namespace "$ns" >/dev/null 2>&1 || continue
