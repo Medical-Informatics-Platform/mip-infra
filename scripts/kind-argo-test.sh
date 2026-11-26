@@ -39,6 +39,9 @@ trap teardown_cluster EXIT
 step "Create kind cluster '$CLUSTER'"
 ensure_kind_cluster
 
+step "Start registry mirrors"
+start_registry_mirrors
+
 step "Install Gateway API CRDs (forward-compat SAR)"
 install_gateway_api_crds
 

@@ -128,12 +128,29 @@ comply:
 | interactive `scripts/gen_secrets.sh` | non-interactive `scripts/e2e/ci-secrets.sh` |
 | Redis HA images from `public.ecr.aws` | the same digests from `mirror.gcr.io`, as `public.ecr.aws` rate-limits (429) anonymous CI runners |
 
+### Image downloads
+
+Each kind node has its own image store, so an image used on three nodes is
+downloaded three times. The e2e and smoke scripts start a pull-through mirror
+per registry on the kind network (`start_registry_mirrors` in
+[`scripts/e2e/lib.sh`](../scripts/e2e/lib.sh)) for docker.io, quay.io, ghcr.io
+and mirror.gcr.io, so each image is downloaded once per job. docker.elastic.co
+is pulled directly: its images run on one node each, and a mirror would only
+store a second copy on the runner's disk. A node falls back to the registry
+itself when its mirror fails.
+
+At the end of every job, `report_downloads` lists per registry what was
+downloaded and what the nodes hold (what they would have downloaded without
+the mirrors), with the runner's disk use, in the log and the job summary.
+kind's node image, which kind-action downloads once per job, is not counted.
+
 ### Running a profile locally
 
 ```bash
 git push origin HEAD                 # Argo must be able to fetch the commit
 PROFILE=exareme2 KEEP=1 bash scripts/e2e/run-e2e.sh
 kind delete cluster --name mip-e2e   # when done
+docker rm -f $(docker ps -aq --filter name=kind-mirror-)   # and its registry mirrors
 ```
 
 `HEAD_SHA=<sha>` overrides the synced revision; `CLUSTER=<name>` the kind

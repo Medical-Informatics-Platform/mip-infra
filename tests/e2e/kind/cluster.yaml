@@ -1,12 +1,20 @@
 ---
-# kind topology for the e2e jobs: 1 control-plane + 3 workers, because the
-# argocd redis-ha server/haproxy run 3 replicas with hard pod anti-affinity
-# and the control-plane is tainted NoSchedule. Passed to helm/kind-action in
-# .github/workflows/e2e.yml so the cluster is created right the first time;
-# scripts/e2e/lib.sh (create_ha_kind_cluster) keeps an equivalent inline copy
-# for local runs and recreates any cluster with fewer than 4 nodes.
+# kind topology for the e2e and smoke jobs: 1 control-plane + 3 workers,
+# because the argocd redis-ha server/haproxy run 3 replicas with hard pod
+# anti-affinity and the control-plane is tainted NoSchedule. Passed to
+# helm/kind-action in .github/workflows/e2e.yml and kind-argo-smoke.yml so the
+# cluster is created right the first time; scripts/e2e/lib.sh
+# (create_ha_kind_cluster) keeps an equivalent inline copy for local runs and
+# recreates any cluster with fewer than 4 nodes.
+# containerd reads per-registry hosts.toml files from /etc/containerd/certs.d,
+# where start_registry_mirrors (scripts/e2e/lib.sh) points the nodes at the
+# registry mirrors.
 kind: Cluster
 apiVersion: kind.x-k8s.io/v1alpha4
+containerdConfigPatches:
+  - |-
+    [plugins."io.containerd.grpc.v1.cri".registry]
+      config_path = "/etc/containerd/certs.d"
 nodes:
   - role: control-plane
   - role: worker
