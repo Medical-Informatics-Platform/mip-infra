@@ -466,6 +466,9 @@ step "e2e profile: $PROFILE (revision under test: $HEAD_SHA)"
 step "Create kind cluster '$CLUSTER'"
 ensure_kind_cluster
 
+step "Start registry mirrors"
+start_registry_mirrors
+
 step "Apply Argo CD overlay"
 install_argo_overlay
 
