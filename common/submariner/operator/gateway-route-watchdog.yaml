@@ -1,24 +1,25 @@
 ---
-# Restarts the route agent when the gateway node's policy routing is incomplete. The route agent
-# installs the rule "from all lookup 150" and one table-150 route per remote CIDR when the node becomes
-# the gateway. It does not re-add a route it has already installed. Without them, the gateway health
-# check fails and Lighthouse stops serving remote records. The networkd drop-in
-# (gateway-node-networkd.yaml) prevents one known cause; this DaemonSet covers the others.
+# Restarts the route agent when the active gateway's health checks fail. The route agent installs the
+# rule "from all lookup 150" and the table-150 routes on the gateway node once and does not re-add
+# them. Without them the gateway's health-check pings fail: its connections show "error" while the
+# tunnels stay up. The networkd drop-in (gateway-node-networkd.yaml) prevents one cause; this
+# DaemonSet recovers from the others.
 #
-# Every minute, on the node of the active gateway, the pod compares table 150 with the subnets of all
-# remote Endpoints. After two failed checks in a row, it deletes the route agent pod on its node, and
-# the new pod re-installs the rule and routes. At most one restart per 15 minutes. It does nothing when
-# the API returns incomplete data or the local gateway is passive. Each failed check is logged with
-# the table content: kubectl -n submariner-operator logs ds/submariner-gateway-route-watchdog
+# Every minute the pod reads the Gateway object of its node. When the gateway is active and a
+# connection is in "error" in two checks in a row, it deletes the route agent pod on its node; the new
+# pod re-installs the rule and the routes. A tunnel that is down shows "connecting" and is left alone.
+# Restarts are at least 15 minutes apart. When a restart does not clear the errors, the interval
+# doubles, up to 4 hours; it resets once no connection is in error.
+# Log: kubectl -n submariner-operator logs ds/submariner-gateway-route-watchdog
 #
-# Security: uses the host network only to read the routing tables, which needs no capabilities. Opens
-# no port. Non-root, no privilege escalation, no capabilities, read-only root filesystem, RuntimeDefault
-# seccomp, no host path, no service links. One-hour projected token. Permissions: Role
-# submariner-gateway-route-watchdog in base/mip-infrastructure/rbac/submariner-rbac.yaml.
+# Security: no host network, so Calico policy and the remote-clusters tier apply to the pod. It opens
+# no port. Non-root, no privilege escalation, no capabilities, read-only root filesystem,
+# RuntimeDefault seccomp, no service links, one-hour projected token. Role and admission policy in
+# base/mip-infrastructure/rbac/submariner-rbac.yaml: read the Gateway objects, delete the route agent
+# pod on its own node, nothing else.
 #
-# Image: alpine/kubectl (the script uses kubectl, busybox sh and busybox ip). Pinned by index digest
-# to the newest tag within kubectl's version skew of the central API server (1.35). Update the tag and
-# digest together.
+# Image: alpine/kubectl (kubectl and busybox sh). Pinned by index digest to the newest tag within
+# kubectl's version skew of the central API server (1.35). Update the tag and digest together.
 apiVersion: v1
 kind: ServiceAccount
 metadata:
@@ -47,7 +48,7 @@ spec:
       serviceAccountName: submariner-gateway-route-watchdog
       automountServiceAccountToken: false
       enableServiceLinks: false
-      hostNetwork: true
+      # On the gateway node: the admission policy lets the pod delete pods on its own node only.
       nodeSelector:
         submariner.io/gateway: 'true'
       tolerations:
@@ -75,47 +76,69 @@ spec:
             - |
               set -u
               ns=submariner-operator
-              interval=60
-              needed=2
-              cooldown=900
+              interval=60  # seconds between checks
+              needed=2  # checks in a row with an error before a restart
+              base=900  # minimum seconds between restarts
+              max=14400  # upper limit of the interval while restarts do not help
+              cooldown=$base
               bad=0
               last=0
+              restarted=0  # 1 from a restart until a check without errors
+              noted=0  # "did not help" logged for the last restart
+              api_ok=1
+              err=/tmp/kubectl.err
+              pods="/api/v1/namespaces/${ns}/pods?labelSelector=app%3Dsubmariner-routeagent"
+              pods="${pods}&fieldSelector=spec.nodeName%3D${NODE_NAME}"
               log() { echo "$(date -u +%Y-%m-%dT%H:%M:%SZ) $*"; }
               trap 'exit 0' TERM INT
-              log "watching the policy routing of ${NODE_NAME}"
-              jp_subnets='{range .items[*]}{.spec.cluster_id}{" "}{.spec.subnets}{"\n"}{end}'
+              log "watching the Gateway object of ${NODE_NAME}"
               while :; do
-                # The Gateway object is named after its node. Only the active gateway needs table 150.
-                ha="$(kubectl -n "$ns" get gateways.submariner.io "$NODE_NAME" \
-                  -o jsonpath='{.status.haStatus}' 2>/dev/null)"
-                me="$(kubectl -n "$ns" get submariners.submariner.io \
-                  -o jsonpath='{.items[0].spec.clusterID}' 2>/dev/null)"
-                want="$(kubectl -n "$ns" get endpoints.submariner.io -o jsonpath="$jp_subnets" 2>/dev/null \
-                  | awk -v me="$me" '$1 != me {print $2}' | tr -d '[]"' | tr ',' '\n' | sed '/^$/d' | sort -u)"
-                # Never restart on an API error or a passive gateway.
-                if [ "$ha" != active ] || [ -z "$me" ] || [ -z "$want" ]; then
-                  bad=0
+                # First line: HA status. Then one line per connection: its status.
+                if state="$(kubectl -n "$ns" get gateways.submariner.io "$NODE_NAME" \
+                  -o jsonpath='{.status.haStatus}{"\n"}{range .status.connections[*]}{.status}{"\n"}{end}' \
+                  2>"$err")"; then
+                  [ "$api_ok" = 1 ] || log "Gateway object readable again"
+                  api_ok=1
                 else
-                  have="$(ip route show table 150 2>/dev/null | awk '{print $1}')"
-                  missing=""
-                  for c in $want; do
-                    printf '%s\n' "$have" | grep -qx "$c" || missing="${missing} ${c}"
-                  done
-                  rule=0
-                  ip rule show | grep -q 'lookup 150' && rule=1
-                  if [ "$rule" = 1 ] && [ -z "$missing" ]; then
-                    [ "$bad" -gt 0 ] && log "policy routing complete again"
-                    bad=0
-                  else
+                  [ "$api_ok" = 0 ] || log "cannot read the Gateway object: $(head -n 1 "$err")"
+                  api_ok=0
+                  state=""
+                fi
+                ha="$(printf '%s\n' "$state" | head -n 1)"
+                errors="$(printf '%s\n' "$state" | tail -n +2 | grep -cx error)"
+                if [ "$api_ok" = 0 ] || [ "$ha" != active ]; then
+                  bad=0
+                elif [ "$errors" -eq 0 ]; then
+                  if [ "$bad" -gt 0 ] || [ "$restarted" = 1 ]; then
+                    log "no connection in error"
+                  fi
+                  bad=0
+                  restarted=0
+                  noted=0
+                  cooldown=$base
+                else
+                  if [ "$bad" -lt "$needed" ]; then
                     bad=$((bad + 1))
-                    table="$(ip route show table 150 2>/dev/null | tr '\n' ';')"
-                    log "policy routing incomplete (${bad}/${needed}): rule=${rule}" \
-                      "missing:${missing:- none}; table 150: ${table}"
+                    log "connections in error: ${errors} (check ${bad}/${needed})"
+                  fi
+                  if [ "$bad" -ge "$needed" ]; then
+                    if [ "$restarted" = 1 ] && [ "$noted" = 0 ]; then
+                      cooldown=$((cooldown * 2))
+                      [ "$cooldown" -le "$max" ] || cooldown=$max
+                      log "restart did not help; next restart after $((cooldown / 60)) minutes"
+                      noted=1
+                    fi
                     now="$(date +%s)"
-                    if [ "$bad" -ge "$needed" ] && [ $((now - last)) -ge "$cooldown" ]; then
-                      log "restarting the route agent on ${NODE_NAME}"
-                      kubectl -n "$ns" delete pod -l app=submariner-routeagent \
-                        --field-selector "spec.nodeName=${NODE_NAME}" --wait=false && last="$now"
+                    if [ $((now - last)) -ge "$cooldown" ]; then
+                      # One deletecollection request; the answer holds pod specs and is not printed.
+                      if kubectl delete --raw "$pods" >/dev/null 2>"$err"; then
+                        log "restarted the route agent on ${NODE_NAME}"
+                        last="$now"
+                        restarted=1
+                        noted=0
+                      else
+                        log "route agent restart failed: $(head -n 1 "$err")"
+                      fi
                       bad=0
                     fi
                   fi

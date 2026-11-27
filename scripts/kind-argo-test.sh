@@ -14,6 +14,8 @@
 #   - the notebook RBAC reconciler (base/mip-infrastructure/notebook-operator)
 #     binds only in labelled federation-* namespaces, copies the notebook API
 #     proxy CA there, and its admission policies refuse anything else
+#   - the Submariner route watchdog (base/mip-infrastructure/rbac/submariner-rbac.yaml)
+#     may delete only the route agent pod on its own node
 #
 # Usage:
 #   bash scripts/kind-argo-test.sh           # spin up, test, tear down
@@ -418,5 +420,96 @@ echo "OK: reconciler pruned $NB_FED (bindings and CA ConfigMap) and emptied the 
 for ns in "$NB_FED" "$NB_UNLABELLED" "$NB_OTHER"; do
   kubectl delete namespace "$ns" --wait=false >/dev/null 2>&1 || true
 done
+
+step "Submariner route watchdog: admission policy and rights"
+# base/mip-infrastructure/rbac/submariner-rbac.yaml is applied out-of-band in production. Its policy
+# uses failurePolicy Fail: if it did not compile, every pod delete in submariner-operator would be
+# refused, DaemonSet rollouts included.
+SUBM_RBAC="$REPO_ROOT/base/mip-infrastructure/rbac/submariner-rbac.yaml"
+SUBM_NS=submariner-operator
+WATCHDOG_SA=submariner-gateway-route-watchdog
+WATCHDOG="system:serviceaccount:$SUBM_NS:$WATCHDOG_SA"
+WATCHDOG_IMAGE=$(sed -n 's/^ *image: *//p' "$REPO_ROOT/common/submariner/operator/gateway-route-watchdog.yaml" | head -n 1)
+kubectl apply --server-side --force-conflicts -f "$SUBM_RBAC" >/dev/null
+kubectl wait --for=jsonpath='{.status.observedGeneration}'=1 \
+  validatingadmissionpolicy/submariner-gateway-route-watchdog --timeout=60s >/dev/null
+warnings=$(kubectl get validatingadmissionpolicy submariner-gateway-route-watchdog \
+             -o jsonpath='{.status.typeChecking.expressionWarnings}')
+[[ -z "$warnings" ]] || fail "policy submariner-gateway-route-watchdog has type-checking warnings: $warnings"
+[[ "$(kubectl auth can-i list pods -n "$SUBM_NS" --as="$WATCHDOG")" == "no" ]] \
+  || fail "route watchdog can list pods"
+[[ "$(kubectl auth can-i deletecollection pods -n "$SUBM_NS" --as="$WATCHDOG")" == "yes" ]] \
+  || fail "route watchdog cannot deletecollection pods"
+echo "OK: route watchdog may deletecollection pods and may not list them"
+
+read -r -a workers <<<"$(kubectl get nodes -l '!node-role.kubernetes.io/control-plane' \
+                           -o jsonpath='{.items[*].metadata.name}')"
+node_a=${workers[0]}
+node_b=${workers[1]}
+smoke_pod() { # $1 name, $2 app label, $3 node; never runs anything, only has to exist
+  kubectl apply -f - >/dev/null <<EOF
+apiVersion: v1
+kind: Pod
+metadata:
+  name: $1
+  namespace: $SUBM_NS
+  labels: {app: $2}
+spec:
+  nodeName: $3
+  containers: [{name: pause, image: registry.k8s.io/pause:3.10}]
+EOF
+}
+smoke_pod smoke-routeagent-a submariner-routeagent "$node_a"
+smoke_pod smoke-routeagent-b submariner-routeagent "$node_b"
+smoke_pod smoke-gateway-a submariner-gateway "$node_a"
+sleep 3
+
+# Impersonation carries no node name, so the policy refuses every delete, the route agent's included.
+for sel in app%3Dsubmariner-gateway app%3Dsubmariner-routeagent; do
+  if out=$(kubectl --as="$WATCHDOG" delete --raw \
+             "/api/v1/namespaces/$SUBM_NS/pods?labelSelector=$sel&dryRun=All" 2>&1); then
+    fail "admission allowed: route watchdog deletes pods with $sel without a node name"
+  fi
+  grep -qF "ValidatingAdmissionPolicy 'submariner-gateway-route-watchdog'" <<<"$out" \
+    || fail "refused by something other than submariner-gateway-route-watchdog ($sel): $out"
+done
+echo "OK: denied: route watchdog deletes without a node name"
+
+# With its own pod-bound token, on node A: the route agent on node A only.
+kubectl -n "$SUBM_NS" create serviceaccount "$WATCHDOG_SA" --dry-run=client -o yaml | kubectl apply -f - >/dev/null
+kubectl apply -f - >/dev/null <<EOF
+apiVersion: v1
+kind: Pod
+metadata:
+  name: smoke-watchdog
+  namespace: $SUBM_NS
+spec:
+  nodeName: $node_a
+  serviceAccountName: $WATCHDOG_SA
+  restartPolicy: Never
+  containers:
+    - name: probe
+      image: $WATCHDOG_IMAGE
+      command:
+        - /bin/sh
+        - -c
+        - |
+          try() {
+            if kubectl delete --raw "/api/v1/namespaces/$SUBM_NS/pods?\$1&dryRun=All" >/dev/null 2>&1; then
+              echo "\$2 allowed"
+            else
+              echo "\$2 denied"
+            fi
+          }
+          try "labelSelector=app%3Dsubmariner-routeagent&fieldSelector=spec.nodeName%3D$node_a" own-routeagent
+          try "labelSelector=app%3Dsubmariner-routeagent&fieldSelector=spec.nodeName%3D$node_b" other-routeagent
+          try "labelSelector=app%3Dsubmariner-gateway" gateway
+EOF
+kubectl -n "$SUBM_NS" wait --for=jsonpath='{.status.phase}'=Succeeded pod/smoke-watchdog --timeout=180s >/dev/null \
+  || fail "route watchdog probe did not finish: $(kubectl -n "$SUBM_NS" logs smoke-watchdog 2>&1 | tail -n 3)"
+got=$(kubectl -n "$SUBM_NS" logs smoke-watchdog)
+[[ "$got" == $'own-routeagent allowed\nother-routeagent denied\ngateway denied' ]] \
+  || fail "route watchdog with its own token: $got"
+echo "OK: with its pod-bound token the watchdog may delete only the route agent on its own node"
 
 step "All checks passed"

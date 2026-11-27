@@ -7,7 +7,8 @@
 #
 # Checks: gateway node label, gateway DaemonSet and Gateway object, gateway node
 # policy routing against the remote CIDRs, gateway connections, the networkd
-# drop-in and route watchdog DaemonSets, leftover uninstall DaemonSets, Calico
+# drop-in and route watchdog DaemonSets, the route watchdog's admission policy
+# and rights, leftover uninstall DaemonSets, Calico
 # API server and IP pools, Calico tiers, the broker registration of the central
 # cluster, PSK and broker credentials, no Secrets in the broker namespace, the
 # clusterset.local forward in the cluster CoreDNS, the Lighthouse export
@@ -37,7 +38,7 @@ set -uo pipefail
 for arg in "$@"; do
   case "$arg" in
     *=*) export "${arg?}" ;;
-    -h|--help) sed -n '2,31p' "$0"; exit 0 ;;
+    -h|--help) sed -n '2,32p' "$0"; exit 0 ;;
     *) printf 'ERROR: unknown argument %s (use KEY=value)\n' "$arg" >&2; exit 2 ;;
   esac
 done
@@ -142,12 +143,33 @@ if [[ -n "$conns" && -z "$bad" ]]; then
 else
   fail "gateway connections" "${bad:-no connections}; error: see policy routing above; connecting: tunnel down or the remote holds an old endpoint of this cluster (remote-node README, Troubleshooting)"
 fi
+# Route watchdog: ready and off the host network, its admission policy in place, and its account may
+# restart the route agent (deletecollection) but not list pods.
+wd_sa="system:serviceaccount:${OPERATOR_NS}:submariner-gateway-route-watchdog"
 wd="$(kc -n "$OPERATOR_NS" get daemonset submariner-gateway-route-watchdog -o jsonpath='{.status.desiredNumberScheduled}/{.status.numberReady}' 2>/dev/null)"
-if [[ -n "$wd" && "${wd%/*}" == "${wd#*/}" && "${wd%/*}" != 0 ]]; then
-  restarts="$(kc -n "$OPERATOR_NS" logs ds/submariner-gateway-route-watchdog --since=168h 2>/dev/null | grep -c 'restarting the route agent')"
-  pass "route watchdog DaemonSet" "desired/ready ${wd}, route agent restarts in the last 7 days: ${restarts:-0}"
-else
+wd_hostnet="$(kc -n "$OPERATOR_NS" get daemonset submariner-gateway-route-watchdog -o jsonpath='{.spec.template.spec.hostNetwork}' 2>/dev/null)"
+if [[ -z "$wd" || "${wd%/*}" != "${wd#*/}" || "${wd%/*}" == 0 ]]; then
   fail "route watchdog DaemonSet" "desired/ready ${wd:-not found}; apply submariner-rbac.yaml and sync the submariner-operator Application (common/submariner/operator/gateway-route-watchdog.yaml)"
+elif [[ "$wd_hostnet" == true ]]; then
+  fail "route watchdog DaemonSet" "runs on the host network (old version); sync the submariner-operator Application"
+else
+  restarts="$(kc -n "$OPERATOR_NS" logs ds/submariner-gateway-route-watchdog --since=168h 2>/dev/null | grep -c 'restarted the route agent')"
+  pass "route watchdog DaemonSet" "desired/ready ${wd}, route agent restarts in the last 7 days: ${restarts:-0}"
+fi
+if kc get validatingadmissionpolicy submariner-gateway-route-watchdog >/dev/null 2>&1 \
+  && kc get validatingadmissionpolicybinding submariner-gateway-route-watchdog >/dev/null 2>&1; then
+  pass "route watchdog admission policy" "policy and binding present"
+else
+  fail "route watchdog admission policy" "missing: the watchdog could delete every pod in ${OPERATOR_NS}; apply base/mip-infrastructure/rbac/submariner-rbac.yaml"
+fi
+can_list="$(kc auth can-i list pods -n "$OPERATOR_NS" --as="$wd_sa" 2>/dev/null)"
+can_purge="$(kc auth can-i deletecollection pods -n "$OPERATOR_NS" --as="$wd_sa" 2>/dev/null)"
+if [[ "$can_list" == no && "$can_purge" == yes ]]; then
+  pass "route watchdog rights" "deletecollection pods, no list"
+elif [[ -z "$can_list" || -z "$can_purge" ]]; then
+  warn "route watchdog rights" "not checked: the current context may not impersonate ${wd_sa}"
+else
+  fail "route watchdog rights" "list pods: ${can_list}, deletecollection pods: ${can_purge}; apply base/mip-infrastructure/rbac/submariner-rbac.yaml"
 fi
 nc="$(kc -n "$OPERATOR_NS" get daemonset submariner-gateway-node-config -o jsonpath='{.status.desiredNumberScheduled}/{.status.numberReady}' 2>/dev/null)"
 if [[ -n "$nc" && "${nc%/*}" == "${nc#*/}" && "${nc%/*}" != 0 ]]; then

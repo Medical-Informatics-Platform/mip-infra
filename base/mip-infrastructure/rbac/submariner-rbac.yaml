@@ -114,14 +114,13 @@ roleRef:
 # Namespaced Roles/Bindings (Extracted to prevent ArgoCD sync errors)
 #
 # Broker Role of the central cluster, bound to the operator's broker account
-# submariner-operator/submariner-broker-client. Kubernetes fills its token
-# Secret (common/submariner/operator/broker-credentials.yaml).
-# The operator references the broker credentials through brokerK8sSecret, so
-# it runs a broker secret syncer: it lists and watches Secrets in this
-# namespace and blocks reconciliation until the list succeeds. secrets
-# get/list/watch must stay. Keep no Secret in this namespace; the broker token
-# and the IPsec PSK are in submariner-operator. serviceaccounts get/list from
-# the upstream chart is unused and dropped.
+# submariner-operator/submariner-broker-client; Kubernetes fills its token
+# Secret (common/submariner/operator/broker-credentials.yaml). The operator
+# uses brokerK8sSecret, so its broker secret syncer lists and watches Secrets
+# here and blocks reconciliation until that works: keep secrets
+# get/list/watch, and keep no Secret in this namespace. The broker token and
+# the PSK are in submariner-operator. The upstream serviceaccounts get/list is
+# unused and dropped.
 #
 # This account is not handed to remote clusters; remote nodes use their own
 # cluster-<id> accounts bound to the narrower submariner-remote-cluster Role
@@ -404,10 +403,60 @@ subjects:
     name: submariner-gateway
     namespace: submariner-operator
 ---
-# Gateway route watchdog (common/submariner/operator/gateway-route-watchdog.yaml). Reads the Gateway,
-# Submariner and Endpoint objects and deletes the route agent pod on its own node. RBAC cannot limit
-# delete to a label or a node, so it covers all pods in this namespace; the script selects only the
-# route agent on its own node.
+# Gateway route watchdog (common/submariner/operator/gateway-route-watchdog.yaml). It reads the
+# Gateway object of its node and restarts the route agent there with one deletecollection request.
+# RBAC cannot limit a delete to a label or a node; this policy does: the watchdog may delete only pods
+# labelled app=submariner-routeagent on the node of its pod-bound token. The policy comes before the
+# Role, so that the right never exists without the limit.
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata:
+  name: submariner-gateway-route-watchdog
+spec:
+  failurePolicy: Fail
+  matchConstraints:
+    namespaceSelector:
+      matchLabels:
+        kubernetes.io/metadata.name: submariner-operator
+    resourceRules:
+      # A deletecollection request is validated pod by pod, with oldObject set.
+      - apiGroups: ['']
+        apiVersions: [v1]
+        operations: [DELETE]
+        resources: [pods]
+  matchConditions:
+    - name: caller-is-route-watchdog
+      expression: >-
+        request.userInfo.username == 'system:serviceaccount:submariner-operator:submariner-gateway-route-watchdog'
+  variables:
+    # Node of the pod the token is bound to (ServiceAccountTokenPodNodeInfo, GA in Kubernetes 1.32).
+    - name: node
+      expression: >-
+        has(request.userInfo.extra) && 'authentication.kubernetes.io/node-name' in
+        request.userInfo.extra
+        ? request.userInfo.extra['authentication.kubernetes.io/node-name'] : []
+  validations:
+    - expression: >-
+        size(variables.node) == 1
+        && has(oldObject.metadata.labels) && 'app' in oldObject.metadata.labels
+        && oldObject.metadata.labels['app'] == 'submariner-routeagent'
+        && oldObject.spec.nodeName == variables.node[0]
+      message: the route watchdog may delete only the route agent pod on its own node
+      reason: Forbidden
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicyBinding
+metadata:
+  name: submariner-gateway-route-watchdog
+spec:
+  policyName: submariner-gateway-route-watchdog
+  validationActions: [Deny]
+  matchResources:
+    namespaceSelector:
+      matchLabels:
+        kubernetes.io/metadata.name: submariner-operator
+---
+# deletecollection and no list: the watchdog cannot read pod specs.
 apiVersion: rbac.authorization.k8s.io/v1
 kind: Role
 metadata:
@@ -417,12 +466,9 @@ rules:
   - apiGroups: [submariner.io]
     resources: [gateways]
     verbs: [get]
-  - apiGroups: [submariner.io]
-    resources: [submariners, endpoints]
-    verbs: [list]
   - apiGroups: ['']
     resources: [pods]
-    verbs: [list, delete]
+    verbs: [deletecollection]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding

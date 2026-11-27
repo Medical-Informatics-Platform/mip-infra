@@ -70,20 +70,42 @@ check_hub_firewall() {
   fi
 }
 
+# Route watchdog of setup-microk8s.sh: the unit runs with its own account, which may restart the route
+# agent and nothing else.
 check_route_watchdog() {
-  if systemctl -q is-enabled submariner-route-watchdog.service 2>/dev/null \
-    && systemctl -q is-active submariner-route-watchdog.service 2>/dev/null; then
-    pass "route watchdog" "unit submariner-route-watchdog"
+  local sa=system:serviceaccount:submariner-operator:submariner-route-watchdog problems="" out
+  systemctl -q is-enabled submariner-route-watchdog.service 2>/dev/null \
+    && systemctl -q is-active submariner-route-watchdog.service 2>/dev/null \
+    || problems="${problems} unit not enabled or not active;"
+  [[ -f /etc/submariner-route-watchdog/kubeconfig ]] \
+    || problems="${problems} credential /etc/submariner-route-watchdog/kubeconfig missing;"
+  [[ -z "$(systemctl show --property SupplementaryGroups --value submariner-route-watchdog.service 2>/dev/null)" ]] \
+    || problems="${problems} old unit that reads the admin kubeconfig;"
+  [[ "$(kubectl auth can-i get secrets --namespace submariner-operator --as="$sa" 2>/dev/null)" == no ]] \
+    || problems="${problems} its account may read Secrets;"
+  [[ "$(kubectl auth can-i list pods --namespace submariner-operator --as="$sa" 2>/dev/null)" == no ]] \
+    || problems="${problems} its account may list pods;"
+  [[ "$(kubectl auth can-i deletecollection pods --namespace submariner-operator --as="$sa" 2>/dev/null)" == yes ]] \
+    || problems="${problems} its account may not restart the route agent (Submariner removed and joined again?);"
+  # The admission policy must refuse every other pod; tested on the gateway pod once it exists.
+  if kubectl -n submariner-operator get pods -l app=submariner-gateway -o name 2>/dev/null | grep -q .; then
+    if out="$(kubectl --as="$sa" delete --raw \
+      '/api/v1/namespaces/submariner-operator/pods?labelSelector=app%3Dsubmariner-gateway&dryRun=All' 2>&1)" \
+      || ! grep -qF "ValidatingAdmissionPolicy 'submariner-route-watchdog'" <<<"$out"; then
+      problems="${problems} its admission policy does not stop it from deleting the gateway pod;"
+    fi
+  fi
+  if [[ -z "$problems" ]]; then
+    pass "route watchdog" "unit submariner-route-watchdog, own account"
   else
-    fail "route watchdog" "re-run setup-microk8s.sh; without it the connection stays in error after a systemd-networkd restart until the route agent is restarted by hand"
+    fail "route watchdog" "${problems# } re-run setup-microk8s.sh; without the watchdog the connection stays in error after a systemd-networkd restart"
   fi
 }
 
-# The API server must authorize with RBAC. With the MicroK8s default, AlwaysAllow, the
-# service-account token of any pod has full control of the cluster and reads the broker token and
-# the IPsec PSK stored in it. The verdict comes from the running server: an authenticated identity
-# that no role is bound to must not read Secrets. The arguments file shows what the next restart
-# applies. The probe impersonates, which the MicroK8s admin kubeconfig may do.
+# The API server must authorize with RBAC. With the MicroK8s default, AlwaysAllow, any pod token can
+# read the broker token and the PSK. The running server gives the verdict: an identity without roles
+# must not read Secrets. The arguments file shows what the next restart applies. The probe
+# impersonates, so it needs the MicroK8s admin kubeconfig.
 check_api_authorization() {
   local mode answer
   mode="$(sed -n 's/^--authorization-mode=//p' /var/snap/microk8s/current/args/kube-apiserver 2>/dev/null | tail -1)"
@@ -99,11 +121,10 @@ check_api_authorization() {
   fi
 }
 
-# The kubelet API on port 10250 accepts service-account tokens. Without --authorization-mode=Webhook
-# the kubelet allows every authenticated request, so a pod that reaches the port could run commands
-# in every container of the node, whatever the API server authorizes. The probe presents a
-# ten-minute token of an account that no role is bound to: 403 is the answer of a kubelet that
-# authorizes through the API server, 200 the answer of one that allows everything.
+# The kubelet API (port 10250) accepts service-account tokens. Without Webhook authorization it
+# allows every authenticated request: a pod that reaches the port could run commands in any
+# container. The probe sends a ten-minute token without roles: 403 means Webhook, 200 means the
+# kubelet allows everything.
 check_kubelet_authorization() {
   local mode token code=""
   mode="$(sed -n 's/^--authorization-mode=//p' /var/snap/microk8s/current/args/kubelet 2>/dev/null | tail -1)"
@@ -119,9 +140,8 @@ check_kubelet_authorization() {
   esac
 }
 
-# With RBAC the kube-controller-manager needs the right to read Calico tiers. Without it the Calico
-# API server refuses its informers for Calico policies, and the garbage collector and the quota
-# controller report a failed sync at every period. setup-microk8s.sh grants it (calico-tier-getter).
+# With RBAC the kube-controller-manager must read Calico tiers, or its garbage collector and quota
+# controller never sync. setup-microk8s.sh grants it (calico-tier-getter).
 check_tier_access() {
   kubectl get tiers.projectcalico.org >/dev/null 2>&1 || return 0
   if [[ "$(kubectl auth can-i get tiers.projectcalico.org --as=system:kube-controller-manager 2>/dev/null)" == yes ]]; then

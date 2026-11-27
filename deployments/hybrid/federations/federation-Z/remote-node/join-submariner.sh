@@ -182,6 +182,13 @@ while :; do
 done
 kubectl -n "$NS" get pods
 
+# setup-microk8s.sh gives the route watchdog its own account in this namespace. Removing Submariner
+# deletes the namespace with that account, so a later join needs setup-microk8s.sh again.
+watchdog_sa="system:serviceaccount:${NS}:submariner-route-watchdog"
+if [[ "$(kubectl auth can-i deletecollection pods -n "$NS" --as="$watchdog_sa" 2>/dev/null)" != yes ]]; then
+  log "WARNING: the route watchdog has no account in ${NS}; run 'sudo ./setup-microk8s.sh' again"
+fi
+
 log "Connection status"
 subctl show all || true
 
