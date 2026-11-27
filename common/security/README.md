@@ -1,304 +1,115 @@
-# MIP Security Network Policies
+# Network policies
 
-This module implements network isolation policies for MIP federations and common namespaces to ensure secure, isolated communication between different components of the MIP infrastructure.
+This directory isolates the namespaces of the cluster. Every federation namespace and every common namespace gets a default deny with explicit allows. A Calico tier confines the traffic of the remote nodes of hybrid federations.
 
-## Overview
+| Path | Content |
+| --- | --- |
+| `netpol.yaml` | The ApplicationSets and Applications that deploy the charts below |
+| `federation/` | Chart for federation namespaces |
+| `common-templates/` | Chart for common namespaces |
+| `remote-clusters/` | Calico tier `remote-clusters` and its end-of-tier policy |
+| `remote-networks/` | Chart for the policy of one hybrid federation in that tier |
+| `diagram.svg` | Overview |
 
-The security policies implement a **zero-trust network model** where:
-- Each federation namespace is isolated and can only communicate within itself
-- Common namespaces are accessible by federation namespaces for shared services
-- DNS access to `kube-system` is maintained for cluster functionality
-- ArgoCD management access is preserved
-- External HTTP/HTTPS access is allowed for container registries and APIs, except from notebook pods
+![Network policies](diagram.svg)
 
-## Architecture
+## Federation namespaces
 
-![Network Policy Architecture](diagram.svg)
+The ApplicationSet `federation-network-policies` finds every federation (`deployments/local/federations/*`, `deployments/hybrid/federations/*/mip-infrastructure`) and applies the chart `federation/` to its namespace.
 
-The diagram above shows the network isolation architecture with:
+| Direction | Allowed |
+| --- | --- |
+| Ingress | the same namespace; the Argo CD namespace `argocd-mip-team` |
+| Egress | the same namespace; DNS in `kube-system` (UDP and TCP 53); HTTP (80) and HTTPS (443) anywhere |
 
-- **Federation Namespaces**: Auto-discovered and isolated from each other
-- **Common Services**: Shared resources with controlled access 
-- **Access Control Switches**: Type-based configuration for federation access
-- **System Services**: Always accessible for DNS and external connectivity
-- **Security Boundaries**: Default-deny with explicit allow rules
+Notebook pods (`component: singleuser-server`) do not get these rules. Their own policies (`federation/templates/notebook-network-policy.yaml`) allow the same namespace, DNS and the Jupyter AI proxy, but no internet. A NetworkPolicy can only add access, so leaving them out is the only way to take the internet away. User code and the shared examples run next to the user's platform token and cannot send it out directly. `%pip install` and other downloads fail. DNS still resolves outside names.
 
-## Network Policy Rules
+## Common namespaces
 
-### Federation Namespaces (`federation-*`)
+The ApplicationSet `common-network-policies` (`netpol.yaml`) applies the chart `common-templates/` to each listed namespace: `mip-common-datacatalog`, `mip-athena` (Jupyter AI proxy) and `mip-notebooks-system` (notebook operator).
 
-**Ingress (Allowed)**:
-- Traffic from the same namespace
-- Traffic from ArgoCD namespace (`argocd-mip-team`)
+| Direction | Allowed |
+| --- | --- |
+| Ingress | the same namespace; Argo CD; federations, only where enabled (below) |
+| Egress | the same namespace; DNS; HTTP and HTTPS |
 
-**Egress (Allowed)**:
-- Traffic to the same namespace
-- DNS queries to `kube-system` (UDP/TCP port 53)
-- External HTTP (port 80) and HTTPS (port 443)
+Some namespaces need more, in `common-templates/templates/common-network-policies.yaml`:
 
-**Notebook pods** (`component: singleuser-server`) are left out of these rules and get their
-own in `federation/templates/notebook-network-policy.yaml`: the same ingress from the namespace
-and egress to the namespace and DNS (`allow-notebook-within-namespace`), plus the Jupyter AI
-proxy (`allow-notebook-to-codex-llm`), but no external HTTP or HTTPS. A NetworkPolicy can only
-add access, so leaving them out of the namespace-wide rules is the only way to take the
-internet away. User code and the shared examples run there next to the user's platform token, so they
-cannot post it out directly; `%pip install` and other downloads fail. DNS still resolves
-outside names.
+- `mip-athena` admits only federation notebook pods, and only `athena-proxy` reaches the inference server (`athenaProxy.upstream` in `common-templates/values.yaml`).
+- `mip-notebooks-system`: the operator and the RBAC reconciler reach the API server on 6443, the hub pods of the federations reach the notebook API proxy on 8443, and the proxy reaches the API server. The namespace has no HTTP or HTTPS egress (`networkPolicy.noExternalEgress`).
 
-### Common Namespaces (`mip-common-*`)
+### Federation access to common namespaces
 
-**Ingress (Allowed)**:
-- Traffic from the same namespace
-- Traffic from federation namespaces (**controlled by access switches**, see Configuration)
-- Traffic from ArgoCD namespace
-
-**Egress (Allowed)**:
-- Traffic to the same namespace
-- DNS queries to `kube-system` (UDP/TCP port 53)
-- External HTTP (port 80) and HTTPS (port 443)
-
-## Configuration
-
-The network policies use **auto-discovery** for federation namespaces and static configuration for common namespaces:
-
-### **Auto-Discovery for Federation Namespaces**
-
-Federation namespaces are **automatically discovered** from git repositories:
-- **Local federations**: `deployments/local/federations/*`
-- **Hybrid federations**: `deployments/hybrid/federations/*/mip-infrastructure`
-
-### **Static Configuration for Common Namespaces**
-
-Common namespaces are configured via the `common-network-policies` ApplicationSet in `netpol.yaml`:
+Federations reach common namespaces only where `federationAccess` in `common-templates/values.yaml` allows it. It is set per federation type, read from the namespace label `mip.federation-type`, and off by default:
 
 ```yaml
-generators:
-  - list:
-      elements:
-        - commonNamespace: mip-common-datacatalog
-        - commonNamespace: mip-athena            # Jupyter AI proxy
-        - commonNamespace: mip-notebooks-system  # notebook operator
+federationAccess:
+  local:
+    enabled: true
+    allowedCommonNamespaces:
+      - mip-common-datacatalog
+  hybrid:
+    enabled: false
+    allowedCommonNamespaces: []
 ```
-
-Each gets the namespace isolation and default-deny policies of
-`common-templates`, plus a namespace-specific block in the same template:
-`mip-athena` admits only federation notebook pods and lets only `athena-proxy`
-reach the inference server (`athenaProxy.upstream` in `common-templates/values.yaml`);
-`mip-notebooks-system` lets the operator and the `mip-notebook-rbac-manager` CronJob reach the API server on 6443.
 
 ### API server egress (`apiServer.cidrs`)
 
-The JupyterHub pod of every federation, the notebook operator and its RBAC reconciler in
-`mip-notebooks-system` talk to the Kubernetes API. NetworkPolicy is evaluated after the
-`kubernetes` Service DNAT, so the egress rules on TCP 6443 see the control-plane node
-addresses, not the Service address. `apiServer.cidrs` in `federation/values.yaml` and
-`common-templates/values.yaml` limits those rules to the listed addresses; an empty list admits
-any address on 6443. Both files must carry the same list (the e2e render job compares them).
-Read the addresses from the cluster, and update the list when control-plane nodes change:
+JupyterHub pods, the notebook operator and its RBAC reconciler talk to the Kubernetes API. Policies are evaluated after the `kubernetes` Service DNAT, so the egress rules on TCP 6443 see the control-plane node addresses. `apiServer.cidrs` limits these rules to the listed addresses; an empty list admits any address on 6443.
 
-```bash
-kubectl get endpointslices -n default -l kubernetes.io/service-name=kubernetes \
-  -o jsonpath='{range .items[*].endpoints[*]}{.addresses[0]}/32{"\n"}{end}'
-```
+- Keep the list equal in `federation/values.yaml` and `common-templates/values.yaml` (CI compares them). The chart `remote-networks/` lists the same addresses in `centralNetworks`.
+- Update it when the control-plane nodes change. `check-central.sh` fails when a live endpoint is not in the list. Read the addresses:
 
-`deployments/hybrid/federations/federation-Z/enrollment/check-central.sh` compares the list
-with the live endpoints on every run and fails when an endpoint is not covered.
+  ```bash
+  kubectl get endpointslices -n default -l kubernetes.io/service-name=kubernetes \
+    -o jsonpath='{range .items[*].endpoints[*]}{.addresses[0]}/32{"\n"}{end}'
+  ```
 
-The JupyterHub pod may always reach the notebook API proxy in `mip-notebooks-system` on 8443
-(`common/notebook-operator/manifests/api-proxy.yaml`). `apiServer.hubDirect` in
-`federation/values.yaml` additionally keeps the pinned 6443 rule; set it to `false` once every
-hub talks through the proxy. The policy keeps its name in both states so Argo CD updates it in
-place. The `mip-notebooks-system` block admits the hub pods of federation namespaces to the
-proxy, lets the proxy reach the API server, and gives that namespace no external HTTP or HTTPS
-egress at all (`networkPolicy.noExternalEgress`). The switch and the step after it are described
-in [`how-to-implement-the-notebook-properly.md`](../../how-to-implement-the-notebook-properly.md).
-
-Federation access control for those namespaces is configured via `common-templates/values.yaml`:
-
-```yaml
-# Federation access control (by TYPE, not specific namespaces)
-federationAccess:
-  local:
-    enabled: false  # Default: false (more secure)
-    allowedCommonNamespaces:
-      # - mip-common-datacatalog
-  hybrid:
-    enabled: false  # Default: false (more secure)
-    allowedCommonNamespaces:
-      # - mip-common-datacatalog
-```
-
-### Federation Access Control
-
-**Important**: Access control is **type-based** rather than namespace-specific:
-
-- **Local federations** (`mip.federation-type: local`) have separate access controls
-- **Hybrid federations** (`mip.federation-type: hybrid`) have separate access controls  
-- By default, **all federation types cannot** access common namespaces (`enabled: false`)
-
-To enable access:
-
-1. **Enable by type**: Set `federationAccess.local.enabled: true` for all local federations
-2. **Configure allowed namespaces**: List which common namespaces that federation type can access
-3. **Apply changes**: Commit and push - ArgoCD will update the policies automatically
-
-**Security Note**: The `mip-common-security` namespace should typically **not** be accessible by any federation type.
-
-### Adding New Namespaces
-
-#### **Federation Namespace (Auto-Discovery)**
-Simply add the federation directory to the git repository:
-- **Local federation**: Create `deployments/local/federations/federation-new/`  
-- **Hybrid federation**: Create `deployments/hybrid/federations/federation-new/mip-infrastructure/`
-
-The ApplicationSet will **automatically discover and apply** network policies!
-
-#### **Common Namespace (Manual Configuration)**
-1. Add the namespace to the `common-network-policies` ApplicationSet list in `common/security/netpol.yaml`
-2. Optionally add it to federation access lists in `common-templates/values.yaml`
-3. Commit and push - ArgoCD will automatically apply the policies
-
-**Example: Enable local federations to access datacatalog**:
-```yaml
-federationAccess:
-  local:
-    enabled: true     # Enable ALL local federations
-    allowedCommonNamespaces:
-      - mip-common-datacatalog  # Allow access to datacatalog only
-```
-
-### Customizing Policies
-
-You can customize the network policies by modifying:
-
-- `netpol.yaml` - Common namespace app generation
-- `values.yaml` - Federation access and global settings
-- `federation/templates/federation-network-policy.yaml` - Federation-specific rules
-- `common-templates/templates/common-network-policies.yaml` - Common namespaces, with one block per namespace that needs more than isolation
-- `templates/common-network-policies.yaml` - Common namespace rules
-
-## Deployment
-
-The security policies are automatically deployed by the main `mip-infrastructure` ApplicationSet when it discovers the `common/security` directory.
-
-### How It Works
-
-1. **Security AppProject**: `mip-argo-project-security` provides dedicated permissions for network policy management
-2. **Federation Policies**: `federation-network-policies` ApplicationSet auto-discovers federations and creates individual network policy applications for each
-3. **Common Policies**: `common-network-policies` ApplicationSet deploys policies to all common namespaces
-
-### Manual Deployment
-
-If needed, you can deploy manually:
-
-```bash
-# Deploy the ApplicationSets
-kubectl apply -f common/security/netpol.yaml
-
-# Sync the applications (security project must exist first)
-argocd app sync mip-argo-project-security-app
-argocd app sync federation-network-policies  
-argocd app sync common-network-policies
-
-# Check auto-generated applications
-argocd app list | grep netpol-
-```
-
-## Troubleshooting
-
-### Network Connectivity Issues
-
-If applications cannot connect after applying policies:
-
-1. **Check policy application**:
-   ```bash
-   kubectl get networkpolicies -n <namespace>
-   ```
-
-2. **Verify namespace labels**:
-   ```bash
-   kubectl get namespace <namespace> --show-labels
-   ```
-   
-   Ensure namespaces have the `name` label matching their namespace name.
-
-3. **Test DNS resolution**:
-   ```bash
-   kubectl run test-dns --image=busybox --rm -it -- nslookup kubernetes.default
-   ```
-
-4. **Check ArgoCD access**:
-   ```bash
-   kubectl get pods -n argocd-mip-team
-   ```
-
-### Common Issues
-
-- **DNS not working**: Ensure `kube-system` namespace has proper labels
-- **ArgoCD can't sync**: Check ArgoCD namespace access rules
-- **External dependencies failing**: Verify HTTP/HTTPS egress rules
-
-## Security Considerations
-
-- **Default Deny**: All traffic is denied by default unless explicitly allowed
-- **Principle of Least Privilege**: Only necessary communication is permitted
-- **Federation Isolation**: Federations cannot communicate with each other
-- **Granular Common Access**: Federation access to common services is **disabled by default** and must be explicitly enabled
-- **Federation Type Separation**: Local and hybrid federations have separate access controls
-- **Management Access**: ArgoCD retains full management capabilities
-
-### Accepted risks
-
-- **Notebook examples reach notebooks only after review.** `notebook-examples-sync` (`deployments/shared-apps/mip-stack/notebook-examples`,
-  one per federation) serves only the mip-examples commit pinned in `EXAMPLES_REVISION`. mip-examples master takes
-  changes only through pull requests with one approving review (organization ruleset, no force-push), and when it
-  moves, Renovate opens a PR in this repo that moves the pin: example code reaches notebooks only after review in both
-  repositories. It runs in users' notebooks next to their platform token, so review the compare link of that PR like
-  code. The sync pod uses the federation's 80/443 egress, has no service account token and only the examples volume,
-  which notebooks mount read-only. Notebooks have no internet (`notebook-network-policy.yaml`), so code run from an
-  example cannot send the user's platform token out directly.
+The hub may always reach the notebook API proxy on 8443. `apiServer.hubDirect` in `federation/values.yaml` also keeps its direct rule to 6443; set it to `false` once every hub uses the proxy. The policy keeps its name either way, so Argo CD updates it in place.
 
 ## Remote clusters (Submariner)
 
-Hybrid federations receive the same default deny as local ones (the
-`federation-network-policies` ApplicationSet discovers
-`deployments/hybrid/federations/*/mip-infrastructure`). The flows a
-federation needs from its remote nodes are allowed per component and port in
-the federation's own `submariner-policies/` directory, with one `ipBlock` per
-remote pod CIDR.
+Hybrid federations get the same default deny as local ones. The flows they need with their remote nodes are allowed per component and port in the federation's own `submariner-policies/`, with one `ipBlock` per remote pod CIDR. Design: [docs/hybrid-federations.md](../../docs/hybrid-federations.md).
 
-`remote-clusters/` adds a cluster-wide safety net: a Calico `Tier` (`remote-clusters`, order 500) and its end-of-tier policy. That policy passes all traffic that no federation policy decided on to the Kubernetes NetworkPolicies.
+The Calico tier `remote-clusters` adds a cluster-wide guard. Calico evaluates it (order 500) before every Kubernetes NetworkPolicy. It needs Calico 3.29 or later (`kubectl get tiers.projectcalico.org` lists `default`).
 
-`remote-networks/` is the chart for the policy of one hybrid federation in that tier, `remote-clusters.<namespace>`. It denies all traffic from or to the federation's remote CIDRs, except two flows in the federation's own namespace (matched by `kubernetes.io/metadata.name`): remote workers to the aggregation server, and the controller to the remote workers. The controller's HTTP API and the Flower server are not reachable from remote networks. Other federations are closed to these networks like any other namespace.
+- `remote-networks/` builds one policy per hybrid federation, `remote-clusters.<namespace>`. It passes two flows to the federation's NetworkPolicies: remote workers to the aggregation server, and the controller to the remote workers. It denies every other flow from or to the federation's remote networks, in every namespace. The namespace is matched by `kubernetes.io/metadata.name`. The controller's HTTP API and the Flower server are closed to remote networks, and other federations are closed like any other namespace.
+- The last policy of the tier, `remote-clusters.pass-other-traffic`, passes all other traffic on to the Kubernetes NetworkPolicies.
+- The Deny rules apply to every pod. The chart therefore refuses a file without the `remoteNodes` list, a network wider than `/16`, and a network that overlaps a network of this cluster (`centralNetworks`: pod and service networks, API server addresses). A refused file leaves its Application in error and the last synced policy in place.
+- The ApplicationSet `federation-remote-networks` reads `deployments/hybrid/federations/*/mip-infrastructure/remote-networks.yaml`; the namespace is the directory name. Nothing under `common/` names a federation or a network.
+- The Application `netpol-remote-clusters` syncs the tier, and `netpol-<namespace>-remote` each federation policy. Both are in the project `mip-argo-project-security`, which allows `Tier` and `GlobalNetworkPolicy`. The Argo CD application controller may write only policies named `remote-clusters.*`.
 
-Neither directory names a federation or a network. The ApplicationSet `federation-remote-networks` takes the namespace from the federation's directory name and the networks from `remote-networks.yaml` in that directory. The Application `netpol-remote-clusters` syncs the tier, and `netpol-<namespace>-remote` syncs each federation policy. Both are in project `mip-argo-project-security`, which whitelists `Tier` and `GlobalNetworkPolicy`; the application controller ClusterRole grants the matching verbs on policies named `remote-clusters.*`. Tiers need Calico 3.29 or later (`kubectl get tiers.projectcalico.org` must list `default`).
+To add a remote node, put its pod CIDR into the federation's `submariner-policies/network-policy.yaml`, and its pod and service CIDR into the federation's `remote-networks.yaml`. Nothing under `common/` changes, not even for a new hybrid federation. `scripts/check-remote-cidrs.sh` (CI, needs `yq` and `helm`) checks that:
 
-To add a remote node, put its pod CIDR into the federation's `submariner-policies/network-policy.yaml` and its pod and service CIDRs into the federation's `remote-networks.yaml`. Nothing under `common/` changes, not even for a new hybrid federation. `scripts/check-remote-cidrs.sh` (CI; needs `yq` and `helm`) checks that:
+- both files agree with the node's `submariner-values*.yaml`;
+- no network overlaps another one or a network of this cluster;
+- `centralNetworks` covers the networks of this cluster, and the chart refuses an overlapping network and a file without `remoteNodes`;
+- the rendered policy passes the networks to the federation's namespace only.
 
-- both files agree with the node's `submariner-values.yaml`
-- no network overlaps another one or a central network
-- the rendered policy passes the networks to the federation's namespace only
-
-Migration: the former shared policy `remote-clusters.confine-remote-clusters` is not pruned and stays until deleted by hand. Its order is lower, so while it exists it decides first and the federation policies have no effect. `check-central.sh` warns while it exists. Delete it once the script reports the federation's policy as correct: `kubectl delete globalnetworkpolicies.projectcalico.org remote-clusters.confine-remote-clusters`.
-
-The worker isolation policies of the federation chart
-(`federation/templates/exareme-network-policy.yaml`) still select the
-pre-1.0.0 labels `app: exareme2-*` and match no pod. Re-enabling them requires
-the corrected selectors and complete rules (controller to worker 5672, worker
-to aggregation server 50051, worker to controller 5000, worker DNS, local
-worker to global worker 8080) together with the `excludedSelector` parameter
-in `netpol.yaml`; that change alters local federations too and is tracked
-separately.
-
-## Monitoring
-
-Monitor network policy effectiveness:
+Migration: the earlier shared policy `remote-clusters.confine-remote-clusters` is not pruned. While it exists it decides first, and the federation policies have no effect; `check-central.sh` warns. Delete it once `check-central.sh` reports the federation's policy as correct:
 
 ```bash
-# Check denied connections (if using Falco or similar)
-kubectl logs -n kube-system <falco-pod>
+kubectl delete globalnetworkpolicies.projectcalico.org remote-clusters.confine-remote-clusters
+```
 
-# View network policy events
-kubectl get events --field-selector reason=NetworkPolicyDenied
-``` 
+## Add a namespace
 
+- Federation: create its directory, `deployments/local/federations/<name>/` or `deployments/hybrid/federations/<name>/mip-infrastructure/`. The ApplicationSet applies the policies.
+- Common namespace: add it to the list of the `common-network-policies` ApplicationSet in `netpol.yaml`, and to `federationAccess` if federations need it.
+
+## Deployment
+
+The `mip-infrastructure` ApplicationSet deploys this directory. The ApplicationSets in `netpol.yaml` create one Application per namespace; list them with `argocd app list | grep netpol-`. To deploy by hand: `kubectl apply -f common/security/netpol.yaml`.
+
+The policy Applications do not prune. A policy removed from git stays on the cluster until you delete it.
+
+## Troubleshooting
+
+1. List the policies of the namespace: `kubectl -n <namespace> get networkpolicies`.
+2. Check the labels of a federation namespace: `kubectl get namespace <namespace> --show-labels`. The policies of the common namespaces select federations by `mip.namespace-type` and `mip.federation-type`; the network-policy Applications set both.
+3. Test DNS from the namespace: `kubectl -n <namespace> run test-dns --image=busybox --rm -it -- nslookup kubernetes.default`.
+
+## Known limits
+
+- **Notebook examples are reviewed code.** `notebook-examples-sync` (`deployments/shared-apps/mip-stack/notebook-examples`, one per federation) serves only the mip-examples commit pinned in `EXAMPLES_REVISION`. mip-examples takes changes only through reviewed pull requests, and Renovate moves the pin through a pull request here. Review the compare link of that pull request like code: the examples run in users' notebooks next to their platform token. The sync pod uses the federation's 80/443 egress, has no service-account token and mounts only the examples volume, which notebooks mount read-only.
+- **The worker isolation policies match no pod.** `federation/templates/exareme-network-policy.yaml` still selects the old labels `app: exareme2-*`. Re-enabling it needs corrected selectors and complete rules: controller to worker 5672, worker to aggregation server 50051, worker to controller 5000, worker DNS, local worker to global worker 8080. It also needs the `excludedSelector` parameter in `netpol.yaml`, and it changes local federations as well.

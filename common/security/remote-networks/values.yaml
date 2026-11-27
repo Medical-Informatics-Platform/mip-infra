@@ -3,7 +3,7 @@
 # The ApplicationSet federation-remote-networks (../netpol.yaml) sets the first
 # two from the federation's directory: targetNamespace from the directory
 # name, remoteNodes from the file remote-networks.yaml in it. Nothing here
-# names a federation or a network.
+# names a federation or a remote network.
 
 # Namespace of the hybrid federation
 targetNamespace: ''
@@ -11,9 +11,19 @@ targetNamespace: ''
 # Remote nodes of the federation, one entry per node:
 #   - podCidr: 192.0.2.0/24  # pod network of the remote cluster
 #     serviceCidr: 198.51.100.0/24  # service network of the remote cluster
-# An empty list renders no policy.
+# An empty list renders no policy. A missing key fails the render.
 remoteNodes: []
-
+# Networks of this cluster. The chart refuses a remote network that overlaps one
+# of them: the Deny rules apply to every pod, so such a network would cut this
+# cluster's own traffic. The ApplicationSet does not set this key, so a
+# federation's file cannot change it. scripts/check-remote-cidrs.sh checks it
+# against the other places that name these networks.
+centralNetworks:
+  - 10.42.0.0/16  # pod network
+  - 10.43.0.0/16  # service network
+  - 148.187.143.17/32  # API server (apiServer.cidrs of the network-policy charts)
+  - 148.187.143.23/32
+  - 148.187.143.34/32
 # Calico tier of the policy (common/security/remote-clusters)
 tier: remote-clusters
 

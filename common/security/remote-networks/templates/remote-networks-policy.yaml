@@ -35,22 +35,37 @@ docs/hybrid-federations.md, residual risks). applyOnForward, preDNAT and
 doNotTrack are host endpoint settings and are not needed: policy on the
 destination pod is evaluated after kube-proxy's DNAT, against the preserved
 remote source address.
+
+The chart fails instead of rendering when remoteNodes is not a list (the
+federation's file lacks or misspells the key), or when a network is not an
+IPv4 CIDR, is wider than minPrefixLength, or overlaps a network of this
+cluster (centralNetworks). A failed Application keeps the policy it synced
+last.
 */ -}}
 {{- $ns := .Values.targetNamespace | toString }}
 {{- if not (regexMatch `^[a-z0-9]([-a-z0-9]*[a-z0-9])?$` $ns) }}
 {{- fail (printf "targetNamespace %q is not a namespace name" $ns) }}
 {{- end }}
+{{- if not (kindIs "slice" .Values.remoteNodes) }}
+{{- fail "remoteNodes is not a list: the federation's remote-networks.yaml lacks or misspells the key (use [] for no remote node)" }}
+{{- end }}
 {{- $minPrefix := int .Values.minPrefixLength }}
+{{- $central := .Values.centralNetworks }}
 {{- $pods := list }}
 {{- $all := list }}
 {{- range $i, $node := .Values.remoteNodes }}
 {{- range $key := list "podCidr" "serviceCidr" }}
 {{- $cidr := index $node $key | default "" | toString }}
-{{- if not (regexMatch `^([0-9]{1,3}\.){3}[0-9]{1,3}/[0-9]{1,2}$` $cidr) }}
+{{- if not (regexMatch `^((25[0-5]|2[0-4][0-9]|1[0-9][0-9]|[1-9]?[0-9])\.){3}(25[0-5]|2[0-4][0-9]|1[0-9][0-9]|[1-9]?[0-9])/(3[0-2]|[12]?[0-9])$` $cidr) }}
 {{- fail (printf "remoteNodes[%d].%s is not an IPv4 CIDR: %q" $i $key $cidr) }}
 {{- end }}
-{{- if lt (int (last (splitList "/" $cidr))) $minPrefix }}
+{{- if lt (atoi (last (splitList "/" $cidr))) $minPrefix }}
 {{- fail (printf "remoteNodes[%d].%s %s is wider than /%d (minPrefixLength)" $i $key $cidr $minPrefix) }}
+{{- end }}
+{{- range $net := $central }}
+{{- if include "remote-networks.overlap" (list $cidr $net) }}
+{{- fail (printf "remoteNodes[%d].%s %s overlaps %s, a network of this cluster (centralNetworks)" $i $key $cidr $net) }}
+{{- end }}
 {{- end }}
 {{- $all = append $all $cidr }}
 {{- if eq $key "podCidr" }}

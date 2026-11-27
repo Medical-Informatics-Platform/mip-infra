@@ -64,11 +64,10 @@ spec:
           }}{{ else }}{{ .path.path | dir | base | lower }}{{ end }}'
       syncPolicy:
         syncOptions: [CreateNamespace=true, ApplyOutOfSyncOnly=true]
-        # Labels of the federation namespace, managed by this Application.
-        # The policies of the common namespaces select federations by
-        # mip.federation-type (common-templates, federationAccess). The
-        # remote-clusters tier uses no labels: each hybrid federation's policy
-        # names its namespace (federation-remote-networks below).
+        # Labels of the federation namespace, managed by this Application. The
+        # common policies select federations by mip.federation-type
+        # (common-templates, federationAccess). The remote-clusters tier uses
+        # no labels: each hybrid federation's policy names its namespace.
         managedNamespaceMetadata:
           labels:
             name: '{{ if contains "local" .path.path }}{{ .path.basename | lower }}{{
@@ -128,13 +127,12 @@ spec:
         automated:
           selfHeal: true
 ---
-# Calico tier for the traffic exchanged with remote clusters over Submariner,
-# and its end-of-tier policy (common/security/remote-clusters). Generic: the
-# policy of each hybrid federation comes from the ApplicationSet
-# federation-remote-networks below. Plain manifests, so kustomize renders them
-# without the Calico CRDs; the cluster serves projectcalico.org/v3 through the
-# Calico API server. No prune, like the other policy Applications: removing a
-# policy from git leaves it on the cluster until deleted by hand.
+# Calico tier for traffic with remote clusters over Submariner, and its
+# end-of-tier policy (common/security/remote-clusters). The policy of each
+# hybrid federation comes from federation-remote-networks below. Plain
+# manifests, so kustomize needs no Calico CRDs; the Calico API server serves
+# projectcalico.org/v3. No prune, like the other policy Applications: a policy
+# removed from git stays on the cluster until deleted by hand.
 apiVersion: argoproj.io/v1alpha1
 kind: Application
 metadata:
@@ -161,18 +159,16 @@ spec:
     automated:
       selfHeal: true
 ---
-# One Calico policy per hybrid federation in the remote-clusters tier:
-# remote-clusters.<namespace>, built by the chart
-# common/security/remote-networks. It passes the federation's remote networks
-# only to the exaflow components of the federation's namespace and denies
-# them everywhere else. The generator reads the file remote-networks.yaml of
-# every hybrid federation directory: the directory name gives the namespace,
-# as for federation-network-policies above, and the file gives the networks.
-# Nothing under common/ names a federation or a network.
+# One Calico policy per hybrid federation in the remote-clusters tier,
+# remote-clusters.<namespace>, built by the chart common/security/remote-networks.
+# It passes the federation's remote networks only to the exaflow components of
+# its namespace and denies them everywhere else. The generator reads
+# remote-networks.yaml in every hybrid federation directory; the directory
+# name gives the namespace. Nothing under common/ names a federation or a
+# network.
 #
-# preserveResourcesOnDeletion: when a federation's file disappears, its
-# Application is removed but the policy stays on the cluster and keeps
-# confining the federation's remote networks until it is deleted by hand.
+# preserveResourcesOnDeletion: when a federation's file disappears, its policy
+# stays and keeps confining its remote networks until deleted by hand.
 apiVersion: argoproj.io/v1alpha1
 kind: ApplicationSet
 metadata:
@@ -208,7 +204,8 @@ spec:
         path: common/security/remote-networks
         helm:
           # remoteNodes is the list from the federation's file, passed as JSON
-          # (which is YAML); a file without that key renders no policy.
+          # (which is YAML). The chart fails on a file without that key, so
+          # the Application shows an error instead of syncing no policy.
           values: |
             targetNamespace: {{ .path.path | dir | base | lower | quote }}
             remoteNodes: {{ toJson .remoteNodes }}
