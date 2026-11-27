@@ -1,27 +1,25 @@
 #!/usr/bin/env bash
-# Health checks of the central cluster before a remote node joins. Nothing is written: the checks read, and
-# the admission checks are server-side dry runs.
+# Health checks of the central cluster before a remote node joins. Writes nothing: the admission checks
+# are server-side dry runs.
 #
 # Run with a kubectl context that reads the central cluster. Prints one PASS,
 # WARN or FAIL line per check and exits non-zero when a check fails.
 #
-# Checks: gateway node label, gateway DaemonSet and Gateway object, gateway node
-# policy routing against the remote CIDRs, gateway connections, the networkd
-# drop-in and route watchdog DaemonSets, the route watchdog's admission policy
-# and rights, leftover uninstall DaemonSets, Calico
-# API server and IP pools, Calico tiers, the broker registration of the central
-# cluster, PSK and broker credentials, no Secrets in the broker namespace, the
-# clusterset.local forward in the cluster CoreDNS, the Lighthouse export
-# records and the published address of every ServiceExport of the federation,
-# per-remote admission policies, the enrollment record of every remote account,
-# what each remote cluster publishes on the broker against its record, the
-# admission policies as the API server applies them to every enrolled account
-# (verify-enrollment.sh, impersonating the account), the federation's
-# NetworkPolicies, the remote-clusters tier (the federation's policy passes its
-# remote networks only to the namespace of FEDERATION_NS and there only to the
-# aggregation server, every connected remote network is denied elsewhere, the
-# tier ends with a Pass), the policy Applications, the API server egress pins
-# of the network-policy charts (apiServer.cidrs), and subctl (when installed).
+# Checks:
+#   - gateway: node label, DaemonSet, Gateway object, LoadBalancer address and ports, no leftover
+#     uninstall DaemonSets, policy routing, connections, route watchdog (DaemonSet, admission policy,
+#     rights), networkd drop-in
+#   - Calico: API server, IP pools, tiers
+#   - operator and broker: operator log, central cluster registered, PSK, broker credentials, no Secrets
+#     in the broker namespace, clusterset.local forward in CoreDNS
+#   - service discovery: Lighthouse export records, published address of every ServiceExport
+#   - remote clusters: admission policies, protected enrollment records, aggregated imports without
+#     exporters, a record per enrolled account, published exports within the records, and
+#     verify-enrollment.sh for every enrolled account
+#   - network policies: the federation's NetworkPolicies; the remote-clusters tier passes remote
+#     networks only to the federation's aggregation server, denies them elsewhere and ends with a Pass;
+#     the policy Applications
+#   - API server egress pins (apiServer.cidrs), and subctl when installed
 #
 # Parameters (environment variables or key=value arguments):
 #   FEDERATION_NS      default federation-z
@@ -38,7 +36,7 @@ set -uo pipefail
 for arg in "$@"; do
   case "$arg" in
     *=*) export "${arg?}" ;;
-    -h|--help) sed -n '2,32p' "$0"; exit 0 ;;
+    -h|--help) sed -n '2,30p' "$0"; exit 0 ;;
     *) printf 'ERROR: unknown argument %s (use KEY=value)\n' "$arg" >&2; exit 2 ;;
   esac
 done
@@ -219,7 +217,7 @@ else
   fail "broker lists the central cluster" "registered: ${clusters:-none}"
 fi
 kc -n "$OPERATOR_NS" get secret submariner-ipsec-psk >/dev/null 2>&1 \
-  && pass "PSK in the operator namespace" || fail "PSK in the operator namespace" "secret submariner-ipsec-psk missing (common/submariner/README.md, IPsec PSK)"
+  && pass "PSK in the operator namespace" || fail "PSK in the operator namespace" "secret submariner-ipsec-psk missing (common/submariner/README.md, Install, step 2)"
 # Broker credentials: the token Secret Kubernetes fills for the operator's broker account
 # (common/submariner/operator/broker-credentials.yaml). Checks that the keys exist; prints no values.
 broker_secret="$(kc -n "$OPERATOR_NS" get submariner submariner -o jsonpath='{.spec.brokerK8sSecret}' 2>/dev/null)"
@@ -250,10 +248,9 @@ else
 fi
 
 # --- service discovery ------------------------------------------------------------------------------------------
-# The Lighthouse agent keeps one ServiceImport per exported service in its namespace, named
-# <service>-<namespace>-<cluster ID>. It also uses any other ServiceImport there that carries the cluster ID as
-# an export record, and the record it processes last decides the published address. A leftover record can
-# therefore publish an address the Service no longer has.
+# The Lighthouse agent keeps one export record per exported service in its namespace: a ServiceImport named
+# <service>-<namespace>-<cluster ID>. It also reads any other ServiceImport there that carries the cluster ID,
+# and the last one it processes decides the published address. A leftover record can publish an old address.
 records="$(kc -n "$OPERATOR_NS" get serviceimports.multicluster.x-k8s.io -o jsonpath='{range .items[*]}{.metadata.name}{" "}{end}' 2>/dev/null)"
 extra_records=""
 for r in $records; do
@@ -301,13 +298,35 @@ fi
 # --- per-remote identities -------------------------------------------------------------------------------------
 kc -n "$BROKER_NS" get role submariner-remote-cluster >/dev/null 2>&1 \
   && pass "Role submariner-remote-cluster" || fail "Role submariner-remote-cluster" "apply base/mip-infrastructure/rbac/submariner-remote-admission.yaml"
-for p in submariner-remote-cluster-ownership submariner-remote-cluster-subnets submariner-remote-cluster-exports; do
+for p in submariner-remote-cluster-ownership submariner-remote-cluster-subnets submariner-remote-cluster-exports \
+  submariner-remote-cluster-records; do
   if kc get validatingadmissionpolicy "$p" >/dev/null 2>&1 && kc get validatingadmissionpolicybinding "$p" >/dev/null 2>&1; then
     pass "admission policy ${p#submariner-remote-cluster-}" "policy and binding present"
   else
     fail "admission policy ${p#submariner-remote-cluster-}" "missing; apply submariner-remote-admission.yaml"
   fi
 done
+# Only people write enrollment records. The gateway's ClusterRole may create ConfigMaps in every namespace,
+# so the records policy must refuse a dry-run record from the gateway account.
+gw_sa="system:serviceaccount:${OPERATOR_NS}:submariner-gateway"
+out="$(kc -n "$BROKER_NS" create configmap cluster-check-central --dry-run=server --as="$gw_sa" 2>&1)"
+if grep -qF "ValidatingAdmissionPolicy 'submariner-remote-cluster-records'" <<<"$out"; then
+  pass "enrollment records protected" "a service account may not write them"
+elif grep -q 'cannot impersonate' <<<"$out"; then
+  warn "enrollment records protected" "not checked: the current context may not impersonate ${gw_sa}"
+else
+  fail "enrollment records protected" "a dry-run record from ${gw_sa} was not refused by the records policy: $(head -n 1 <<<"$out")"
+fi
+# Remote agents may not delete an aggregated import without exporters (ownership policy); an administrator
+# does. A new import is empty for a moment, so run the check again before deleting.
+empty_imports="$(kc -n "$BROKER_NS" get serviceimports.multicluster.x-k8s.io \
+  -o jsonpath='{range .items[*]}{.metadata.name}{"|"}{.metadata.labels}{"|"}{.metadata.annotations.multicluster\.kubernetes\.io/service-name}{"|"}{.status.clusters[*].cluster}{"\n"}{end}' 2>/dev/null \
+  | awk -F'|' '$2 == "" && $3 != "" && $4 == "" {printf "%s ", $1}')"
+if [[ -z "$empty_imports" ]]; then
+  pass "aggregated imports have exporters" "no aggregated import without a cluster"
+else
+  warn "aggregated imports have exporters" "no exporting cluster: ${empty_imports% }; kubectl -n ${BROKER_NS} delete serviceimports.multicluster.x-k8s.io <name>"
+fi
 enrolled="$(kc -n "$BROKER_NS" get serviceaccounts -l submariner.io/remote-enrollment=true -o jsonpath='{range .items[*]}{.metadata.name}{" "}{end}' 2>/dev/null)"
 [[ -n "${enrolled// /}" ]] && pass "enrolled remote accounts" "$enrolled" || warn "enrolled remote accounts" "none (enroll-remote.sh)"
 # Enrollment records: ConfigMap cluster-<id>, the parameter of the subnet and export policies. An account
@@ -363,10 +382,9 @@ elif [[ -n "$outside" ]]; then
 else
   pass "published exports within the records" "${remote_objects} broker objects of remote clusters"
 fi
-# The policies as the API server applies them now. verify-enrollment.sh impersonates each enrolled account and
-# sends server-side dry runs: objects within the record must be admitted, anything else refused. A failure
-# with a correct record means the API server does not see the record (note on parameter ConfigMaps in
-# submariner-remote-admission.yaml).
+# The policies as the API server applies them: verify-enrollment.sh sends dry runs as each enrolled account.
+# A failure with a correct record means the API server does not see the record (see the note on parameter
+# ConfigMaps in submariner-remote-admission.yaml).
 verify="$(dirname "$0")/verify-enrollment.sh"
 for sa in $enrolled; do
   grep -q "^${sa}=" <<<"$records" || continue

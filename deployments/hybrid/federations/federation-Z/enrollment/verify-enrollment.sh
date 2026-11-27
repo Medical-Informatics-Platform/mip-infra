@@ -1,17 +1,20 @@
 #!/usr/bin/env bash
-# Verifies an enrollment produced by enroll-remote.sh using ONLY the bound token and the CA, the way the
-# remote will use them. Nothing is created: every write is a server-side dry run (--dry-run=server), which
-# runs RBAC and admission (including the ValidatingAdmissionPolicies) without persisting anything.
+# Verifies an enrollment made by enroll-remote.sh. By default it uses only the remote's token and CA, as
+# the remote does; IMPERSONATE=true uses the current context instead. Writes nothing: every write is a
+# server-side dry run (--dry-run=server), which runs RBAC and admission without persisting anything.
 #
 # Checks (PASS/FAIL per line, exit 1 if any FAIL):
 #   reachability  the broker URL answers over HTTPS from this machine (fails fast instead of hanging)
 #   identity      the token authenticates as system:serviceaccount:<broker ns>:cluster-<id>
-#   own objects   Endpoint and Cluster with the caller's ID, EndpointSlice and ServiceImports of an enrolled
-#                 export: admitted
-#   foreign       the same objects with another cluster's ID: denied by the ownership policy
-#   subnets       (when the enrollment ConfigMap pins subnets) an Endpoint outside them: denied
-#   exports       EndpointSlice and ServiceImports of a service outside the enrolled exports: denied
-#   least priv.   secrets in the broker namespace, and the Broker resource: forbidden
+#   own objects   admitted: Endpoint and Cluster with the caller's ID; EndpointSlice and ServiceImports of
+#                 an enrolled export
+#   foreign       denied by the ownership policy: the same objects with another cluster's ID
+#   names, IPs    denied: an aggregated ServiceImport not named <service>-<namespace>, or with a clusterset
+#                 IP the caller did not allocate; a per-cluster ServiceImport with the aggregated name
+#   delete        denied: deleting an aggregated ServiceImport that lists other clusters
+#   subnets       denied, when the record pins subnets: an Endpoint outside them
+#   exports       denied: EndpointSlice and ServiceImports of a service outside the enrolled exports
+#   least priv.   forbidden: reading Secrets, the Broker resource, service accounts, the enrollment records
 #
 # Parameters (environment variables or key=value arguments):
 #   OUT_DIR      directory written by enroll-remote.sh (default .); provides the files below unless overridden
@@ -23,13 +26,11 @@
 #                (written by enroll-remote.sh). The first CIDR is used for the "own" Endpoint; an address
 #                outside the list must be denied.
 #   EXPORTS      comma-separated <namespace>/<service> entries allowed at enrollment; default: content of
-#                OUT_DIR/exports.txt (written by enroll-remote.sh). The first entry is used for the "own"
-#                EndpointSlice and ServiceImports; a service outside the list must be denied. EXPORTS=
-#                (empty) states that the cluster may publish nothing.
-#   IMPERSONATE  default false. true runs the checks for an enrolled cluster without its token: the current
-#                kubectl context (an administrator of the central cluster) impersonates the account, and
-#                SUBNETS and EXPORTS are read from the enrollment ConfigMap cluster-<id>. Only CLUSTER_ID
-#                is needed. Use it after a change to the admission policies or to the record of a cluster.
+#                OUT_DIR/exports.txt. The "own" objects publish the first entry; a service outside the list
+#                must be denied. EXPORTS= (empty) means the cluster may publish nothing.
+#   IMPERSONATE  default false. true: the current kubectl context (a central cluster administrator)
+#                impersonates the account, and SUBNETS and EXPORTS come from the record cluster-<id>. Needs
+#                only CLUSTER_ID. Use it after changing the admission policies or the record of a cluster.
 #   PROXY_URL    proxy for reaching the broker from this machine (socks5://..., http://...). Default, in
 #                order: the proxy-url of the current kubeconfig context; socks5://127.0.0.1:1080 when a
 #                listener is open there (the SSH -D 1080 tunnel of docs/remote-access.md); none otherwise.
@@ -44,7 +45,7 @@ set -euo pipefail
 for arg in "$@"; do
   case "$arg" in
     *=*) export "${arg?}" ;;
-    -h|--help) sed -n '2,41p' "$0"; exit 0 ;;
+    -h|--help) sed -n '2,42p' "$0"; exit 0 ;;
     *) printf 'ERROR: unknown argument %s (use KEY=value)\n' "$arg" >&2; exit 2 ;;
   esac
 done
@@ -184,15 +185,16 @@ if [[ "$IMPERSONATE" != true ]]; then
   fi
 fi
 
-# expect_ok NAME MANIFEST      -> server dry-run create must be admitted
-# expect_denied NAME MANIFEST  -> must be refused by a ValidatingAdmissionPolicy
+# expect_ok NAME MANIFEST                -> server dry-run create must be admitted
+# expect_denied NAME POLICIES MANIFEST   -> must be refused by one of the ValidatingAdmissionPolicies POLICIES
+#                                           (an extended regular expression such as 'a|b')
 expect_ok() {
   local out policy
   if out="$(kc -n "$BROKER_NS" create --dry-run=server -f - <<<"$2" 2>&1)"; then
     pass "$1" "$(first_line <<<"$out")"
   elif grep -q 'AlreadyExists' <<<"$out"; then
-    # A joined cluster has published its Cluster object. The API server looks for an existing object only
-    # after RBAC and admission have accepted the request, so this answer means the request was admitted.
+    # The object exists, such as the Cluster of a joined cluster or a published aggregated import. The API
+    # server checks for it only after RBAC and admission, so the request was admitted.
     pass "$1" "admitted (an object with this name exists)"
   else
     policy="$(grep -o "ValidatingAdmissionPolicy '[^']*'" <<<"$out" | head -n1 || true)"
@@ -205,14 +207,17 @@ expect_ok() {
 }
 expect_denied() {
   local out
-  if out="$(kc -n "$BROKER_NS" create --dry-run=server -f - <<<"$2" 2>&1)"; then
+  if out="$(kc -n "$BROKER_NS" create --dry-run=server -f - <<<"$3" 2>&1)"; then
     fail "$1" "unexpectedly admitted"
-  elif grep -q "ValidatingAdmissionPolicy" <<<"$out"; then
+  elif grep -qE "ValidatingAdmissionPolicy '(${2})'" <<<"$out"; then
     pass "$1" "$(grep -o "ValidatingAdmissionPolicy '[^']*'" <<<"$out" | head -n1)"
   else
-    fail "$1" "refused for another reason: $(first_line <<<"$out")"
+    fail "$1" "not refused by ${2}: $(first_line <<<"$out")"
   fi
 }
+P_OWNERSHIP=submariner-remote-cluster-ownership
+P_SUBNETS=submariner-remote-cluster-subnets
+P_EXPORTS=submariner-remote-cluster-exports
 expect_forbidden() {
   local out
   if out="$(kc -n "$BROKER_NS" "${@:2}" 2>&1)"; then
@@ -273,8 +278,8 @@ spec:
   global_cidr: []
 EOF
 }
-# The three objects the Lighthouse agent writes for an export (lighthouse pkg/agent/controller, 0.25.0). The
-# object names are the script's own, so a dry run never meets an object the cluster has published.
+# The three objects the Lighthouse agent writes for an export. The aggregated ServiceImport must be named
+# <service>-<namespace>; when that import is already published, AlreadyExists counts as admitted (expect_ok).
 endpointslice() { # endpointslice CLUSTER_ID NAMESPACE SERVICE
   cat <<EOF
 apiVersion: discovery.k8s.io/v1
@@ -292,12 +297,12 @@ endpoints: []
 ports: []
 EOF
 }
-serviceimport() { # serviceimport CLUSTER_ID NAMESPACE SERVICE: the per-cluster copy
+serviceimport() { # serviceimport CLUSTER_ID NAMESPACE SERVICE [NAME]: the per-cluster copy
   cat <<EOF
 apiVersion: multicluster.x-k8s.io/v1beta1
 kind: ServiceImport
 metadata:
-  name: verify-${CLUSTER_ID}
+  name: ${4:-verify-${CLUSTER_ID}}
   labels:
     lighthouse.submariner.io/sourceNamespace: ${2}
     multicluster.kubernetes.io/service-name: ${3}
@@ -308,16 +313,20 @@ spec:
   ports: []
 EOF
 }
-aggregated() { # aggregated NAMESPACE SERVICE [ALLOCATING_CLUSTER_ID]: the import all exporters share
+# aggregated NAMESPACE SERVICE [ALLOCATING_CLUSTER_ID] [NAME] [CLUSTERSET_IP]: the import all exporters share.
+# NAME defaults to the canonical <service>-<namespace>.
+aggregated() {
+  local use_ip=false
+  [[ -z "${5:-}" ]] || use_ip=true
   cat <<EOF
 apiVersion: multicluster.x-k8s.io/v1beta1
 kind: ServiceImport
 metadata:
-  name: verify-${CLUSTER_ID}-aggregated
+  name: ${4:-${2}-${1}}
   annotations:
     multicluster.kubernetes.io/service-name: ${2}
     lighthouse.submariner.io/sourceNamespace: ${1}
-    lighthouse.submariner.io/use-clusterset-ip: "false"
+    lighthouse.submariner.io/use-clusterset-ip: "${use_ip}"
 EOF
   if [[ -n "${3:-}" ]]; then
     printf '    lighthouse.submariner.io/clusterset-ip-allocated-by: %s\n' "$3"
@@ -327,6 +336,9 @@ spec:
   type: ClusterSetIP
   ports: []
 EOF
+  if [[ -n "${5:-}" ]]; then
+    printf '  ips: [%s]\n' "$5"
+  fi
 }
 
 # --- identity -----------------------------------------------------------------------------------------------
@@ -351,12 +363,12 @@ if [[ -n "$SUBNETS" || "$IMPERSONATE" == true ]]; then
 else
   echo "SKIP  Endpoint with own cluster_id: ${no_subnets}"
 fi
-expect_denied "Endpoint with foreign cluster_id"                  "$(endpoint "$foreign_id" "$own_subnet")"
+expect_denied "Endpoint with foreign cluster_id"                  "$P_OWNERSHIP" "$(endpoint "$foreign_id" "$own_subnet")"
 expect_ok     "Cluster with own cluster_id (dry run)"             "$(cluster "$CLUSTER_ID" "$CLUSTER_ID")"
-expect_denied "Cluster with foreign cluster_id"                   "$(cluster "$foreign_id" "$foreign_id")"
-expect_denied "Cluster named after another cluster"               "$(cluster "$foreign_id" "$CLUSTER_ID")"
+expect_denied "Cluster with foreign cluster_id"                   "$P_OWNERSHIP" "$(cluster "$foreign_id" "$foreign_id")"
+expect_denied "Cluster named after another cluster"               "$P_OWNERSHIP" "$(cluster "$foreign_id" "$CLUSTER_ID")"
 if [[ -n "$SUBNETS" ]]; then
-  expect_denied "Endpoint with a subnet outside the enrolled list" "$(endpoint "$CLUSTER_ID" "203.0.113.0/24")"
+  expect_denied "Endpoint with a subnet outside the enrolled list" "$P_SUBNETS" "$(endpoint "$CLUSTER_ID" "203.0.113.0/24")"
 else
   echo "SKIP  Endpoint subnet pinning: ${no_subnets}"
 fi
@@ -372,15 +384,39 @@ else
   echo "SKIP  objects of the enrolled export: enrolled exports unknown (no ${OUT_DIR}/exports.txt; pass" \
     "EXPORTS=<list> or re-run enroll-remote.sh CLUSTER_ID=${CLUSTER_ID} ..., which writes it)"
 fi
-expect_denied "EndpointSlice labelled with foreign ID"                 "$(endpointslice "$foreign_id" "$own_ns" "$own_svc")"
-expect_denied "ServiceImport labelled with foreign ID"                 "$(serviceimport "$foreign_id" "$own_ns" "$own_svc")"
-expect_denied "aggregated ServiceImport recording a foreign ID"        "$(aggregated "$own_ns" "$own_svc" "$foreign_id")"
-expect_denied "EndpointSlice of a service that is not enrolled"        "$(endpointslice "$CLUSTER_ID" "$own_ns" "$other")"
+# These objects publish the enrolled export and break one ownership rule each. Without an enrolled export
+# the export policy refuses them as well.
+own_rule="$P_OWNERSHIP"
+[[ -n "$own_export" ]] || own_rule="${P_OWNERSHIP}|${P_EXPORTS}"
+expect_denied "EndpointSlice labelled with foreign ID"                 "$own_rule" "$(endpointslice "$foreign_id" "$own_ns" "$own_svc")"
+expect_denied "ServiceImport labelled with foreign ID"                 "$own_rule" "$(serviceimport "$foreign_id" "$own_ns" "$own_svc")"
+expect_denied "ServiceImport named like the aggregated import"         "$own_rule" \
+  "$(serviceimport "$CLUSTER_ID" "$own_ns" "$own_svc" "${own_svc}-${own_ns}")"
+expect_denied "aggregated ServiceImport recording a foreign ID"        "$own_rule" "$(aggregated "$own_ns" "$own_svc" "$foreign_id")"
+expect_denied "aggregated ServiceImport with another name"             "$own_rule" \
+  "$(aggregated "$own_ns" "$own_svc" "" "verify-${CLUSTER_ID}-aggregated")"
+expect_denied "aggregated ServiceImport, clusterset IP without allocator" "$own_rule" \
+  "$(aggregated "$own_ns" "$own_svc" "" "" 243.0.0.1)"
+expect_denied "EndpointSlice of a service that is not enrolled"        "$P_EXPORTS" "$(endpointslice "$CLUSTER_ID" "$own_ns" "$other")"
 if [[ -n "$own_export" ]]; then
-  expect_denied "EndpointSlice of the service in another namespace"    "$(endpointslice "$CLUSTER_ID" "$other" "$own_svc")"
+  expect_denied "EndpointSlice of the service in another namespace"    "$P_EXPORTS" "$(endpointslice "$CLUSTER_ID" "$other" "$own_svc")"
 fi
-expect_denied "ServiceImport of a service that is not enrolled"        "$(serviceimport "$CLUSTER_ID" "$own_ns" "$other")"
-expect_denied "aggregated ServiceImport, service not enrolled"         "$(aggregated "$own_ns" "$other")"
+expect_denied "ServiceImport of a service that is not enrolled"        "$P_EXPORTS" "$(serviceimport "$CLUSTER_ID" "$own_ns" "$other")"
+expect_denied "aggregated ServiceImport, service not enrolled"         "$P_EXPORTS" "$(aggregated "$own_ns" "$other")"
+
+# An aggregated import that lists other clusters: the caller may not delete it (server-side dry run).
+foreign_import="$(kc -n "$BROKER_NS" get serviceimports.multicluster.x-k8s.io \
+  -o jsonpath='{range .items[*]}{.metadata.name}{"|"}{.metadata.labels}{"|"}{.metadata.annotations.multicluster\.kubernetes\.io/service-name}{"|"}{.status.clusters[*].cluster}{"\n"}{end}' 2>/dev/null \
+  | awk -F'|' -v me="$CLUSTER_ID" '$2 == "" && $3 != "" && $4 != "" && !index(" " $4 " ", " " me " ") {print $1; exit}')"
+if [[ -z "$foreign_import" ]]; then
+  echo "SKIP  deleting an aggregated import of other clusters: none on the broker"
+elif out="$(kc -n "$BROKER_NS" delete serviceimports.multicluster.x-k8s.io "$foreign_import" --dry-run=server 2>&1)"; then
+  fail "deleting an aggregated import of other clusters" "${foreign_import}: unexpectedly admitted"
+elif grep -qF "ValidatingAdmissionPolicy '${P_OWNERSHIP}'" <<<"$out"; then
+  pass "deleting an aggregated import of other clusters" "${foreign_import}: refused by ${P_OWNERSHIP}"
+else
+  fail "deleting an aggregated import of other clusters" "${foreign_import}: not refused by ${P_OWNERSHIP}: $(first_line <<<"$out")"
+fi
 
 # --- least privilege -----------------------------------------------------------------------------------------
 expect_forbidden "reading secrets in the broker namespace"        get secrets

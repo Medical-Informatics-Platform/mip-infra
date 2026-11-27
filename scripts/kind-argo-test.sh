@@ -16,6 +16,8 @@
 #     proxy CA there, and its admission policies refuse anything else
 #   - the Submariner route watchdog (base/mip-infrastructure/rbac/submariner-rbac.yaml)
 #     may delete only the route agent pod on its own node
+#   - no service account may write a Submariner enrollment record
+#     (base/mip-infrastructure/rbac/submariner-remote-admission.yaml)
 #
 # Usage:
 #   bash scripts/kind-argo-test.sh           # spin up, test, tear down
@@ -511,5 +513,28 @@ got=$(kubectl -n "$SUBM_NS" logs smoke-watchdog)
 [[ "$got" == $'own-routeagent allowed\nother-routeagent denied\ngateway denied' ]] \
   || fail "route watchdog with its own token: $got"
 echo "OK: with its pod-bound token the watchdog may delete only the route agent on its own node"
+
+step "Submariner enrollment records: admission policy"
+# base/mip-infrastructure/rbac/submariner-remote-admission.yaml is applied out-of-band in production. The
+# records policy must compile and refuse a record from a service account; an administrator still writes it.
+# The other policies of the file need the Submariner CRDs; verify-enrollment.sh checks them on the cluster.
+kubectl apply --server-side --force-conflicts \
+  -f "$REPO_ROOT/base/mip-infrastructure/rbac/submariner-remote-admission.yaml" >/dev/null
+kubectl wait --for=jsonpath='{.status.observedGeneration}'=1 \
+  validatingadmissionpolicy/submariner-remote-cluster-records --timeout=60s >/dev/null
+warnings=$(kubectl get validatingadmissionpolicy submariner-remote-cluster-records \
+             -o jsonpath='{.status.typeChecking.expressionWarnings}')
+[[ -z "$warnings" ]] || fail "policy submariner-remote-cluster-records has type-checking warnings: $warnings"
+sleep 3
+# The gateway's ClusterRole allows configmaps create in every namespace; only the policy stops it.
+GATEWAY="system:serviceaccount:$SUBM_NS:submariner-gateway"
+if out=$(kubectl --as="$GATEWAY" -n submariner-k8s-broker create configmap cluster-smoke --dry-run=server 2>&1); then
+  fail "admission allowed: the gateway account writes an enrollment record"
+fi
+grep -qF "ValidatingAdmissionPolicy 'submariner-remote-cluster-records'" <<<"$out" \
+  || fail "refused by something other than submariner-remote-cluster-records: $out"
+kubectl -n submariner-k8s-broker create configmap cluster-smoke --dry-run=server >/dev/null \
+  || fail "an administrator cannot write an enrollment record"
+echo "OK: service accounts may not write enrollment records; an administrator may"
 
 step "All checks passed"

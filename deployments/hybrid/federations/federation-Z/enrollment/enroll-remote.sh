@@ -33,7 +33,7 @@
 #   OPERATOR_NS          default submariner-operator
 #   PSK_SECRET           default submariner-ipsec-psk
 #   BROKER_SECRET_SYNCER default false; true also binds Role submariner-remote-cluster-secret-syncer
-#                        (required if the remote's Submariner resource sets brokerK8sSecret; see NOTES.md)
+#                        (required if the remote's Submariner resource sets brokerK8sSecret)
 #   ROTATE_IDENTITY      default false; true deletes and recreates the ServiceAccount first, which invalidates
 #                        every token issued to it so far (a re-run without it only adds a token)
 #
@@ -119,8 +119,12 @@ if ! kubectl get validatingadmissionpolicy submariner-remote-cluster-exports >/d
   warn "ValidatingAdmissionPolicy submariner-remote-cluster-exports is not installed; the account would" \
     "be able to publish any service in any namespace. Apply submariner-remote-admission.yaml."
 fi
+if ! kubectl get validatingadmissionpolicy submariner-remote-cluster-records >/dev/null 2>&1; then
+  warn "ValidatingAdmissionPolicy submariner-remote-cluster-records is not installed; service accounts" \
+    "could rewrite the enrollment record. Apply submariner-remote-admission.yaml."
+fi
 kubectl -n "$OPERATOR_NS" get secret "$PSK_SECRET" >/dev/null 2>&1 \
-  || die "secret ${PSK_SECRET} not found in ${OPERATOR_NS} (created once by hand, see common/submariner/README.md, IPsec PSK)"
+  || die "secret ${PSK_SECRET} not found in ${OPERATOR_NS} (created once by hand, see common/submariner/README.md, Install, step 2)"
 
 # --- identity ---------------------------------------------------------------------------------------------
 if [[ "$ROTATE_IDENTITY" == true ]] && kubectl -n "$BROKER_NS" get serviceaccount "$SA" >/dev/null 2>&1; then
