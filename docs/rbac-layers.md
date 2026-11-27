@@ -1,214 +1,145 @@
-# RBAC & Privilege Map
+# RBAC and privilege map
 
-> One page, four layers. Read top-down. Each layer narrows the layer above.
-> Every "⚠" marks a known gap or wider-than-necessary grant.
+Four layers limit what can change on the cluster. Each layer narrows the one above. **Gap** marks a known gap or a grant wider than needed.
 
-```
- ┌──────────────────────────────────────────────────────────────┐
- │ Layer 1 — Kubernetes ServiceAccount RBAC (ClusterRole)       │ what the SA *can* do
- ├──────────────────────────────────────────────────────────────┤
- │ Layer 2 — Argo CD AppProject (white/blacklist)               │ what an App is *allowed* to sync
- ├──────────────────────────────────────────────────────────────┤
- │ Layer 3 — Argo CD UI/API RBAC (argocd-rbac-cm)               │ who can drive Argo
- ├──────────────────────────────────────────────────────────────┤
- │ Layer 4 — Workload-internal RBAC (Role/RoleBinding shipped)  │ what each pod can do
- └──────────────────────────────────────────────────────────────┘
-```
+| Layer | Controls | Source |
+| --- | --- | --- |
+| 1. ServiceAccount ClusterRoles | what Argo CD's accounts can do | `argo-setup/patches/patch-argocd-*-clusterrole.yaml` |
+| 2. AppProject allow and deny lists | what an Application may sync | `projects/` |
+| 3. Argo CD UI and API RBAC | who drives Argo CD | `roles:` of each AppProject, `argocd-rbac-cm` |
+| 4. Workload RBAC, applied by hand | what each workload can do | `base/mip-infrastructure/rbac/`, `base/mip-infrastructure/notebook-operator/rbac.yaml` |
 
-The effective privilege of any sync is `Layer 1 ∩ Layer 2`.
-Defense-in-depth fails when Layer 1 is broader than Layer 2.
+A sync can do only what layers 1 and 2 both allow. Defense in depth fails where layer 1 is wider than layer 2.
 
----
+## Layer 1: ServiceAccount ClusterRoles
 
-## Layer 1 — ServiceAccount ClusterRoles
+Sources: [`patch-argocd-application-controller-clusterrole.yaml`](../argo-setup/patches/patch-argocd-application-controller-clusterrole.yaml), [`patch-argocd-server-clusterrole.yaml`](../argo-setup/patches/patch-argocd-server-clusterrole.yaml).
 
-Two SAs, both cluster-scoped. Sources:
-[`patch-argocd-application-controller-clusterrole.yaml`](../argo-setup/patches/patch-argocd-application-controller-clusterrole.yaml),
-[`patch-argocd-server-clusterrole.yaml`](../argo-setup/patches/patch-argocd-server-clusterrole.yaml).
+### `argocd-application-controller` (writes every sync)
 
-### `argocd-application-controller` — does the actual sync writes
-| API group | Resources | Verbs | Notes |
-|---|---|---|---|
-| `*` | `*` | get/list/watch | needed for diff & health |
-| core | `namespaces`, `configmaps`, `secrets`, `services`, `serviceaccounts`, `pvc` | C/U/D/P | From upstream |
-| core | `pods` | **delete only** | tightened (was C/D/U/P) |
-| `apps` | deployments, statefulsets, daemonsets, replicasets | C/U/D/P | From upstream |
-| `batch` | jobs, cronjobs | C/U/D/P | From upstream |
-| `rbac.authorization.k8s.io` | roles, rolebindings | **none** | intentionally **not granted** — namespaced RBAC from charts is not synced (see Layer 4) |
-| `notebooks.mip.ebrains.eu` | notebookprofiles | C/U/D/P | NotebookProfile synced by `madgik/mip`; the hub ClusterRole `mip-jupyterhub` that grants `notebooks` is out-of-band and bound per federation by the notebook RBAC reconciler (Layer 4) |
-| `networking.k8s.io` | ingresses, ingressclasses, networkpolicies | full | From upstream |
-| `cert-manager.io` | certificates, issuers, **clusterissuers** | C/U/D/P | only project that needs ClusterIssuer is `mip-common` |
-| `monitoring.coreos.com` | servicemonitors, prometheusrules | C/U/D/P | From upstream |
-| `apiextensions.k8s.io` | customresourcedefinitions | C/U/D/P | only ECK chart needs CRDs at install; `mip-common` and `mip-monitoring` whitelist them |
-| `admissionregistration.k8s.io` | mutating/validatingadmissionwebhooks | **none** | intentionally **not granted** — every AppProject blacklists Webhooks; if a future chart needs them, restore here AND whitelist in the AppProject in the same PR |
-| `submariner.io`, `operator.openshift.io`, `config.openshift.io`, `projectcalico.org`, `network.openshift.io` | submariners/gateways/clusters/dnses/networks/ippools/etc. | mixed | submariner-only |
-| `projectcalico.org` | tiers; `tier.globalnetworkpolicies` named `remote-clusters.*` | C/U/D/P | `mip-security` only: confinement of the Submariner remote CIDRs (`common/security/remote-clusters`); Calico's tiered-policy RBAC, no write on default-tier policies |
-| `multicluster.x-k8s.io` | serviceexports | C/U/D/P | hybrid federations export the aggregation server and controller to remote nodes |
-| ECK groups (`elasticsearch.k8s.elastic.co`, etc.) | elasticsearches, kibanas, beats, … | C/U/D/P/G/L/W | mip-monitoring-only |
+| API group | Resources | Verbs | Note |
+| --- | --- | --- | --- |
+| `*` | `*` | get, list, watch | diff and health |
+| core | namespaces, configmaps, secrets, services, serviceaccounts, persistentvolumeclaims | create, update, delete, patch | |
+| core | pods | delete | |
+| `apps` | deployments, statefulsets, daemonsets, replicasets | create, update, delete, patch | |
+| `batch` | jobs, cronjobs | create, update, delete, patch | |
+| `rbac.authorization.k8s.io` | roles, rolebindings | none | namespaced RBAC from charts is not synced (layer 4) |
+| `admissionregistration.k8s.io` | webhook configurations | none | every project denies webhooks. A chart that needs them gets the grant here and the allowance in its project, in the same pull request. |
+| `apiextensions.k8s.io` | customresourcedefinitions | create, update, delete, patch | only the submariner project allows CRDs |
+| `networking.k8s.io` | ingresses, ingressclasses, networkpolicies | all | |
+| `cert-manager.io` | certificates, issuers, clusterissuers | create, update, delete, patch | ClusterIssuer only in `mip-common` |
+| `monitoring.coreos.com` | servicemonitors, prometheusrules | create, update, delete, patch | |
+| `notebooks.mip.ebrains.eu` | notebookprofiles | create, update, delete, patch | synced by `madgik/mip`; the hub's right on `notebooks` is layer 4 |
+| `submariner.io`, `operator.openshift.io`, `config.openshift.io`, `network.openshift.io`; `projectcalico.org` ippools | Submariner resources | mixed | submariner project only |
+| `projectcalico.org` | tiers; `tier.globalnetworkpolicies` named `remote-clusters.*` | create, update, delete, patch | security project only: the Calico tier of the remote networks. No write on policies of the default tier. |
+| `multicluster.x-k8s.io` | serviceexports | create, update, delete, patch | hybrid federations export their aggregation server |
+| ECK groups | elasticsearches, kibanas, beats, ... | all | monitoring project only |
 
-### `argocd-server` — read-mostly, drives the UI
+### `argocd-server` (the UI)
+
 | API group | Resources | Verbs |
-|---|---|---|
-| core | events, namespaces, configmaps, **secrets**, services, pvc | get/list/watch |
-| core | pods, pods/log | G/L/W + delete + patch |
-| `argoproj.io` | applications, applicationsets, appprojects, workflows | G/L/W + delete + patch |
-| `apps` | deployments, replicasets, statefulsets, daemonsets | G/L/W + delete |
-| `batch` | jobs | G/L/W + create + delete |
-| `networking.k8s.io` | networkpolicies, ingresses, ingressclasses | G/L/W + delete + patch |
-| `cert-manager.io` | clusterissuers | **read-only** (tightened — was C/U/D/P) |
+| --- | --- | --- |
+| core | events, namespaces, configmaps, services, persistentvolumeclaims | get, list, watch |
+| core | pods, pods/log | get, list, watch, delete, patch |
+| `argoproj.io` | applications, applicationsets, appprojects, workflows | get, list, watch, delete, patch |
+| `apps` | deployments, replicasets, statefulsets, daemonsets | get, list, watch, delete |
+| `batch` | jobs | get, list, watch, create, delete |
+| `networking.k8s.io` | networkpolicies, ingresses, ingressclasses | get, list, watch, delete, patch |
+| `cert-manager.io` | clusterissuers | get, list, watch |
+| ECK groups | all | get, list, watch |
 
-**Layer 1 status:** fully reviewed. All four Argo CD SAs (controller, server,
-applicationset-controller, notifications-controller) are in scope:
-- `argocd-application-controller` and `argocd-server` ClusterRoles — tightened
-  vs upstream `*/*/*` (see tables above).
-- `argocd-applicationset-controller` ClusterRole — replaced with empty rules;
-  the upstream namespaced Role suffices since we never set
-  `application.namespaces`.
-- `argocd-notifications-controller` — no ClusterRole upstream; the namespaced
-  Role only reads its own `argocd-notifications-{cm,secret}` and writes back
-  to Application status. Kept as-is.
+The server reads no Secrets.
 
-The one residual *intentional* over-grant is CRD write on the controller, which
-exceeds most AppProject whitelists. Splitting it off would need a second SA;
-leaving as-is because Layer 2 still rejects CRDs everywhere except
-`mip-common`, `mip-monitoring`, and `submariner` (the three that need them).
-Namespaced `roles`/`rolebindings` are **not** granted at all: the SA cannot
-write RBAC in any namespace, whatever Layer 2 whitelists.
+All four Argo CD accounts are reviewed:
 
----
+- `argocd-application-controller` and `argocd-server`: narrowed from the upstream `*/*/*`.
+- `argocd-applicationset-controller`: its ClusterRole has no rules. The namespaced Role is enough, because `application.namespaces` is not set.
+- `argocd-notifications-controller`: no ClusterRole. Its Role reads its own ConfigMap and Secret and writes Application status.
 
-## Layer 2 — AppProject white/blacklists
+**Gap:** the controller may write CRDs, which only the submariner project needs. Layer 2 refuses CRDs in every other project; removing the grant would need a second account.
 
-Source of truth: [`projects/static/`](../projects/static/) and the per-fed template
-[`projects/templates/federation/`](../projects/templates/federation/).
+`scripts/check-upstream-argo-clusterroles.sh` compares the upstream ClusterRoles with the reviewed snapshot `argo-setup/upstream-snapshot/clusterroles.yaml`. CI runs it on pull requests that touch `argo-setup/`, and weekly. To update Argo CD, follow [argo-setup/README.md](../argo-setup/README.md#bumping-argo-cd).
 
-| Project | Destinations | Cluster writes allowed | Namespaced writes allowed | RBAC allowed |
-|---|---|---|---|---|
-| **mip-argo-project-infrastructure** | `argocd-mip-team` | `Namespace` | `Application`, `ApplicationSet`, `AppProject` | none |
-| **mip-argo-project-common** | `ingress-nginx`, `mip-common-datacatalog`, `mip-notebooks-system`, `mip-athena` | `Namespace`, `PV`, `IngressClass`, `GatewayClass`, `ClusterIssuer` | workload kinds + Ingress + Gateway API routes | ❌ blacklisted |
-| **mip-argo-project-monitoring** | `elastic-system` | none | workload kinds + Ingress + Gateway API routes + ECK CRs | ❌ blacklisted |
-| **mip-argo-project-federations** *(umbrella)* | `argocd-mip-team` | none | `Application` only | ❌ blacklisted |
-| **mip-argo-project-federation-`<name>`** *(per-fed, templated)* | `federation-<name>`, `argocd-mip-team` | `Namespace` | full workload set + Ingress + Gateway API routes + `NotebookProfile` | ❌ not whitelisted (hub binding by the notebook RBAC reconciler, Layer 4) |
-| **mip-argo-project-security** | `federation-*`, `mip-common-*`, `argocd-mip-team` (nominal, cluster-scoped objects only) | `Namespace`, Calico `Tier`, `GlobalNetworkPolicy` | `NetworkPolicy` | ❌ blacklisted |
-| **mip-argo-project-submariner** *(opted-out of lint)* | `submariner-k8s-broker`, `submariner-operator` | `CRD`, submariner.io CRs | full workload set | whitelisted at L2, **no L1 grant** (not synced) |
+## Layer 2: AppProject allow and deny lists
 
-Every project also carries an explicit `clusterResourceBlacklist`:
-`ClusterRole`, `ClusterRoleBinding`, `Mutating/ValidatingWebhookConfiguration`, `CustomResourceDefinition`.
-**The submariner project allows `CRD` cluster-wide** (it has to). All others reject.
+Sources: [`projects/static/`](../projects/static/) and the per-federation template [`projects/templates/federation/`](../projects/templates/federation/).
 
-A pre-commit hook
-([`.githooks/pre-commit`](../.githooks/pre-commit))
-fails the commit if any static AppProject lacks `Role`+`RoleBinding` in `namespaceResourceBlacklist`,
-unless the file has `# rbac-lint: ignore` near the top.
+| Project | Destinations | Cluster-scoped kinds allowed | Namespaced kinds allowed | Role, RoleBinding |
+| --- | --- | --- | --- | --- |
+| `mip-argo-project-infrastructure` | `argocd-mip-team` | `Namespace`, Argo CD kinds | `Application`, `ApplicationSet`, `AppProject` | not allowed |
+| `mip-argo-project-common` | `ingress-nginx`, `mip-common-datacatalog`, `mip-notebooks-system`, `mip-athena` | `Namespace`, `PersistentVolume`, `IngressClass`, `GatewayClass`, `ClusterIssuer` | workloads, Ingress, Gateway API routes, certificates | denied |
+| `mip-argo-project-monitoring` | `elastic-system` | `Namespace` | workloads, Ingress, Gateway API routes, ECK resources | denied |
+| `mip-argo-project-federations` (umbrella) | `argocd-mip-team` | none | `Application` | denied |
+| `mip-argo-project-federation-<name>` (one per federation) | `federation-<name>`, `argocd-mip-team` | `Namespace` | workloads, Ingress, Gateway API routes, `NotebookProfile` | not allowed |
+| `mip-argo-project-security` | `federation-*`, `mip-common-*`, `mip-athena`, `mip-notebooks-system`, `argocd-mip-team` | `Namespace`, Calico `Tier`, `GlobalNetworkPolicy` | `NetworkPolicy` | denied |
+| `mip-argo-project-submariner` | `submariner-operator` | `CustomResourceDefinition`, Submariner resources | workloads, Submariner resources, Role, RoleBinding | allowed here, but layer 1 grants no RBAC write, so a sync fails |
 
----
+- Every project except `mip-argo-project-submariner` denies `CustomResourceDefinition`.
+- No project allows ClusterRoles, ClusterRoleBindings or webhook configurations.
+- The pre-commit hook [`.githooks/pre-commit`](../.githooks/pre-commit) fails when a static AppProject does not deny `Role` and `RoleBinding`, unless the file starts with `# rbac-lint: ignore` (the submariner project does).
+- Layer 2 applies at sync time. An account could still act outside it when called directly.
 
-## Layer 3 — Argo CD UI / API RBAC
+## Layer 3: Argo CD UI and API RBAC
 
-Configured via `argocd-rbac-cm` (not in this repo today — defaults to upstream).
-Project policies are declared inside each AppProject under `roles:`:
+Project roles are declared in each AppProject under `roles:`:
 
-| Group | Granted on | Verbs |
-|---|---|---|
-| `argocd-admins` | every project's `<project>-admin` role | applications: get/create/update/delete/sync |
-| `argocd-operators` | most projects' `<project>-operator` role | applications: get/sync |
-| `argocd-developers` | federation projects' `federation-developer` role | applications: get/sync |
+| Group | Role | Rights on applications |
+| --- | --- | --- |
+| `argocd-admins` | `<project>-admin` in every project | get, create, update, delete, sync |
+| `argocd-operators` | `<project>-operator` in most projects | get, sync |
+| `argocd-developers` | `federation-developer` in federation projects | get, sync |
 
-⚠ **Gaps:**
-- `argocd-rbac-cm` itself isn't tracked in this repo — global policy (default role, scopes, OIDC group → policy mapping) is implicit and lives wherever Argo was bootstrapped.
-- `default` AppProject is correctly deny-all in [`base/argo-projects.yaml`](../base/argo-projects.yaml).
+The `default` AppProject denies everything ([`base/argo-projects/argo-projects.yaml`](../base/argo-projects/argo-projects.yaml)).
 
----
+**Gap:** the global policy (`argocd-rbac-cm`: default role, scopes, OIDC group mapping) depends on how Argo CD was bootstrapped, and everyone shares the local `admin` account (see Open hardening items).
 
-## Layer 4 — Workload-internal RBAC (managed out-of-band)
+## Layer 4: Workload RBAC, applied by hand
 
-Cluster-scoped RBAC for workloads is **not** synced through Argo CD (Layer 2 forbids it).
-Instead it is shipped under [`base/mip-infrastructure/rbac/`](../base/mip-infrastructure/rbac/) and applied once at install time.
+Argo CD may not sync cluster-scoped RBAC (layer 2) or namespaced RBAC (layer 1). Workloads that need RBAC get it from files applied once at install time ([getting-started.md](getting-started.md), step 3):
 
-| File | Subjects | Scope |
-|---|---|---|
-| `eck-beats-rbac.yaml` | `eck-filebeat`, `eck-metricbeat` SAs in `elastic-system` | ClusterRole + ClusterRoleBinding |
-| `haproxy-public-rbac.yaml` | `haproxy-public` SA in `ingress-nginx` | ClusterRole + ClusterRoleBinding **plus** namespaced Role + RoleBinding (leader-election in `ingress-nginx`) |
-| `submariner-rbac.yaml` | submariner gateway/operator/routeagent/lighthouse | mixed cluster + namespaced (submariner-k8s-broker, submariner-operator) |
-| `../notebook-operator/rbac.yaml` | `mip-notebook-operator` and `mip-notebook-rbac-manager` SAs in `mip-notebooks-system`; the `jupyterhub` SA of each federation | ClusterRoles `mip-notebook-operator` (pods/PVCs create, no Secrets; the only component that creates notebook pods) and `mip-jupyterhub` (`notebooks`, `secrets: create`), both bound by **RoleBinding** in every federation namespace by the reconciler CronJob (`common/notebook-operator/manifests/reconcile.sh`), never cluster-wide; the reconciler's ClusterRole (`namespaces` read, `rolebindings` write, `bind` on exactly those two ClusterRoles) and the `ValidatingAdmissionPolicy` that confines it; a second policy pins the hub's `secrets: create` to its own `jupyter-*-token` Opaque Secrets owned by a Notebook; the reconciler also copies the CA of the notebook API proxy into each federation (ConfigMap `notebook-api-proxy-ca`, read from the cert-manager request status, never from a Secret; no cluster-wide ConfigMap read) under a third policy that pins its ConfigMap writes to that one PEM key; leader-election Role |
-| `submariner-remote-admission.yaml` | per-remote broker accounts `cluster-<id>` in `submariner-k8s-broker` | namespaced Role `submariner-remote-cluster` plus two cluster-scoped `ValidatingAdmissionPolicy` objects and their bindings (ownership of broker objects, subnet pinning) |
+| File | Accounts | Content |
+| --- | --- | --- |
+| `eck-beats-rbac.yaml` | `eck-filebeat`, `eck-metricbeat` in `elastic-system` | ClusterRole and ClusterRoleBinding |
+| `haproxy-public-rbac.yaml` | `haproxy-public` in `ingress-nginx` | ClusterRole and ClusterRoleBinding; Role and RoleBinding for leader election |
+| `submariner-rbac.yaml` | Submariner gateway, operator, route agent, Lighthouse; the gateway route watchdog | ClusterRoles and namespaced Roles in `submariner-k8s-broker` and `submariner-operator`. The watchdog's Role (`gateways: get`, `pods: deletecollection`) and the admission policy that lets it delete only the route agent pod on its own node. |
+| `submariner-remote-admission.yaml` | the remote nodes' broker accounts `cluster-<id>` in `submariner-k8s-broker` | Role `submariner-remote-cluster` and four admission policies: ownership of broker objects, subnet pinning, export pinning, enrollment records written by people only |
+| `../notebook-operator/rbac.yaml` | `mip-notebook-operator` and `mip-notebook-rbac-manager` in `mip-notebooks-system`; `jupyterhub` in each federation | See below |
 
-**Dynamic federation namespaces.** Nothing under Layer 4 names a federation. The CronJob
-`mip-notebook-rbac-manager` (synced by Argo CD from `common/notebook-operator`; account, Role,
-ClusterRole and policy out-of-band) binds the two notebook ClusterRoles in every namespace named
-`federation-*` that carries `mip.namespace-type=federation`, removes its bindings from any other
-namespace and maintains the operator's `WATCH_NAMESPACES` ConfigMap. The admission policy rejects
-any other roleRef, subject, binding name or namespace from that account, so a compromise of it
-cannot bind anything else anywhere; it may also restart the operator pod. The label is written by
-the Argo CD controller (`managedNamespaceMetadata` of the `federation-network-policies`
-ApplicationSet), which can only label its AppProject destination namespaces, where it already runs
-workloads; the name prefix is checked as well. `kubectl auth can-i create pods --as=system:serviceaccount:<ns>:jupyterhub -n <ns>`
-must answer `no` in every federation. Both policies use `failurePolicy: Fail`: a policy that no
-longer compiles denies the requests it matches (every RoleBinding write, every Secret create)
-for all callers until it is fixed or its binding deleted, which is why the kind smoke test checks
-`status.typeChecking` and exercises them before merge.
+Notebook RBAC:
 
-⚠ **No automated check** that these out-of-band files stay in sync with the Helm charts they were extracted from. Procedure for re-extracting after upstream chart bump is undocumented.
+- The ClusterRole `mip-notebook-operator` may create pods and PVCs, but no Secrets. The operator is the only component that creates notebook pods.
+- The ClusterRole `mip-jupyterhub` covers `notebooks` and `secrets: create`. An admission policy limits the hub's Secret creation to its own `jupyter-*-token` Opaque Secrets owned by a Notebook.
+- The reconciler CronJob `mip-notebook-rbac-manager` binds both ClusterRoles by RoleBinding, never cluster-wide. It binds them in every namespace named `federation-*` that carries `mip.namespace-type=federation`, removes its bindings elsewhere, and maintains the operator's `WATCH_NAMESPACES` ConfigMap.
+- The reconciler also copies the CA of the notebook API proxy into each federation (ConfigMap `notebook-api-proxy-ca`), read from the cert-manager request status. It never reads a Secret and has no cluster-wide ConfigMap read.
+- Admission policies confine the reconciler's account. It may write only those two bindings, under their own names, in `federation-*` namespaces, plus the CA ConfigMap with its single PEM key. A stolen token of it can bind nothing else; it can restart the operator pod.
+- The Argo CD controller writes the namespace label (`managedNamespaceMetadata` of the `federation-network-policies` ApplicationSet). It can label only its projects' destination namespaces, where it already runs workloads.
+- Check in every federation: `kubectl auth can-i create pods --as=system:serviceaccount:<ns>:jupyterhub -n <ns>` must answer `no`.
 
-⚠ **Namespaced RBAC is not synced either** (Layer 1 grants no `roles`/`rolebindings`),
-so charts that ship their own `Role`/`RoleBinding` (`madgik/mip` JupyterHub,
-submariner broker/operator) must have that RBAC applied out-of-band here —
-their Layer-2 whitelists no longer imply a Layer-1 grant.
-The hub's ClusterRole `mip-jupyterhub` only covers `notebooks` and `secrets: create` (`jupyterhub.spawner: operator`, `jupyterhub.rbac.create: false`): the notebook operator creates the pods, so neither the hub nor this controller holds `pods: create`, and the reconciler, not Argo CD, binds it per federation. **Cluster-scoped** RBAC from any chart is still rejected by Layer 2 and fails the sync loudly, which is the desired behavior.
+The admission policies use `failurePolicy: Fail`. A policy that stops compiling refuses every request it matches, for every caller, until it is fixed or its binding is deleted. The kind smoke test therefore checks `status.typeChecking` and exercises the policies before merge.
 
----
+**Gap:** nothing checks that these files stay in line with the charts they were taken from, and re-extraction after a chart update is not documented.
 
-## Quick "where could this go wrong" checklist
+Charts that ship their own `Role` and `RoleBinding` (the `madgik/mip` JupyterHub, the Submariner operator) need that RBAC in these files: their project may allow it, but layer 1 grants no RBAC write. Cluster-scoped RBAC from any chart fails the sync, as intended.
+
+## Checklist
 
 | Concern | Layer | Status |
-|---|---|---|
-| App project tries to manage Roles in a fed namespace | 2 | ✅ blocked, lint enforces |
-| Someone hand-applies a ClusterRole using the controller SA | 1 | ✅ SA can't create ClusterRoles or Webhooks; CRDs intentional for the 3 projects that whitelist them |
-| External Helm chart upgrade introduces cluster-scoped RBAC | 2 | ✅ sync fails loudly |
-| External Helm chart upgrade introduces namespaced RBAC | 1 | ✅ sync fails loudly (SA holds no `roles`/`rolebindings`) |
-| Out-of-band install RBAC drifts from upstream chart | 4 | ⚠ no check |
-| UI user reads cluster-wide secrets | 1 + 3 | ✅ server cluster-wide secret read removed; only namespaced reads remain |
-| New AppProject forgets RBAC blacklist | 2 | ✅ pre-commit blocks |
-| New federation forgets notebook RBAC | 4 | ✅ nothing to add: bindings and watch list follow the namespace label |
-| Reconciler account compromised | 4 | ✅ admission policies limit it to the two notebook bindings and the CA ConfigMap in `federation-*` namespaces, plus its own state ConfigMap |
-| Hub pod reaches the API server | 4 | ⚠ today (`apiServer.hubDirect: true`, pinned to the control-plane addresses); the notebook API proxy is deployed and takes over once the chart points the hub at it; removal of every hub credential: [how-to-implement-the-notebook-properly.md](../how-to-implement-the-notebook-properly.md) |
-| Git runs a workload as the operator SA (`mip-argo-project-common` targets `mip-notebooks-system`) | 2 | ⚠ accepted, same trust model as the other out-of-band SAs; the repository is the trust root |
-| `default` AppProject misuse | 2 | ✅ deny-all |
+| --- | --- | --- |
+| A project tries to manage Roles in a federation namespace | 2 | blocked; the pre-commit lint enforces it |
+| Someone uses the controller account to create a ClusterRole | 1 | the account cannot create ClusterRoles or webhooks; CRD write is the known gap |
+| A chart update adds cluster-scoped RBAC | 2 | the sync fails |
+| A chart update adds namespaced RBAC | 1 | the sync fails: no `roles`/`rolebindings` write |
+| The files of layer 4 drift from the upstream charts | 4 | **gap**: no check |
+| A UI user reads Secrets cluster-wide | 1, 3 | the server reads no Secrets |
+| A new AppProject forgets to deny RBAC | 2 | the pre-commit hook blocks it |
+| A new federation needs notebook RBAC | 4 | nothing to add: bindings follow the namespace label |
+| The reconciler's account is stolen | 4 | admission policies limit it to the two notebook bindings and the CA ConfigMap in `federation-*` namespaces, plus its own state ConfigMap |
+| The hub pod reaches the API server | 4 | **gap** while `apiServer.hubDirect: true` (pinned to the control-plane addresses). The notebook API proxy takes over once the chart points the hub at it ([operations.md](operations.md#switch-the-hub-to-the-notebook-api-proxy)). |
+| Git runs a workload as the operator's account (`mip-argo-project-common` targets `mip-notebooks-system`) | 2 | accepted: the repository is the trust root, as for the other workload accounts |
+| Misuse of the `default` AppProject | 2 | denies everything |
 
-## Glossary
+## Open hardening items
 
-- **C/U/D/P** = create / update / delete / patch
-- **G/L/W** = get / list / watch
-- **Layer-2 scope** is enforced at sync time by Argo CD; the SA *could* still touch resources outside it if invoked directly.
-
----
-
-Pinned at Argo CD (../argo-setup/patches/kustomization.yaml). To bump:
-edit the tag, run `bash scripts/check-upstream-argo-clusterroles.sh --update`,
-review the diff, commit snapshot + tag together.
-
-## Open hardening TODOs
-
-### Security
-- **SSO + disable local `admin`.** Today every operator shares the admin
-  password and bypasses [argocd-rbac-cm](../argo-setup/patches/patch-argocd-rbac-cm.yaml).
-  Configure Dex (or direct OIDC) in [argocd-cm](../argo-setup/patches/patch-argocd-cm.yaml),
-  populate the client secret via the secrets workflow, set `admin.enabled: "false"`,
-  and replace the placeholder group names (`argocd-admins`, `argocd-operators`)
-  in the rbac-cm with real OIDC group claims.
-- **CI diff check for upstream Argo CD ClusterRoles** ✅ done.
-  [`scripts/check-upstream-argo-clusterroles.sh`](../scripts/check-upstream-argo-clusterroles.sh)
-  compares against the snapshot in
-  [`argo-setup/upstream-snapshot/clusterroles.yaml`](../argo-setup/upstream-snapshot/clusterroles.yaml);
-  workflow [`argo-clusterroles-drift.yml`](../.github/workflows/argo-clusterroles-drift.yml)
-  runs it on every PR that touches argo-setup and weekly on a cron.
-- **Track `argocd-secret` bootstrap** end-to-end (signing key, repo creds,
-  OIDC client secret) — currently only [`scripts/gen_secrets.sh`](../scripts/gen_secrets.sh)
-  exists; no glue between it and the install flow.
-
-### Operability
-- **Renovate for the upstream Argo tag** — done. A `customManagers` entry in
-  [`renovate.json5`](../renovate.json5) tracks the pinned tag in
-  [patches/kustomization.yaml](../argo-setup/patches/kustomization.yaml) and opens
-  the bump PR automatically; the [Bumping Argo CD](../argo-setup/README.md#bumping-argo-cd)
-  procedure still applies to review and reconcile the ClusterRole diff.
+- **Single sign-on, and no local `admin`.** Today every operator shares the admin password and bypasses [`argocd-rbac-cm`](../argo-setup/patches/patch-argocd-rbac-cm.yaml). Configure Dex or OIDC in [`argocd-cm`](../argo-setup/patches/patch-argocd-cm.yaml), provide the client secret through the secrets workflow, set `admin.enabled: "false"`, and replace the placeholder groups (`argocd-admins`, `argocd-operators`) with real OIDC group claims.
+- **Bootstrap of `argocd-secret`** (signing key, repository credentials, OIDC client secret): only [`scripts/gen_secrets.sh`](../scripts/gen_secrets.sh) exists, and nothing ties it to the install.

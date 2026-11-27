@@ -1,0 +1,44 @@
+---
+# Limits the worker to the central cluster. Submariner connects every gateway to every
+# other one, so without this policy a pod of another remote node could reach the worker,
+# and the worker could reach anything its node reaches. The host firewall
+# (setup-microk8s.sh, hardening playbook) blocks those tunnels; this policy still applies
+# if one forms.
+#
+# In: the central controller dials the worker's gRPC port from its pod address.
+# Out: DNS, and the central aggregation server (50051), an exported Service with a
+# ClusterIP in the central service CIDR. Not the controller's HTTP API (5000) or the
+# Flower server (8080): the central cluster refuses them from remote nodes.
+# The probes run inside the container (exec) and are not affected.
+# Central CIDRs: CENTRAL_POD_CIDR and CENTRAL_SERVICE_CIDR of preflight.sh.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: exaflow-localworker-central-only
+  namespace: federation-z
+spec:
+  podSelector:
+    matchLabels:
+      app: exaflow-worker
+      nodeType: localworker
+  policyTypes: [Ingress, Egress]
+  ingress:
+    - from:
+        - ipBlock: {cidr: 10.42.0.0/16}  # central pod CIDR
+      ports:
+        - {protocol: TCP, port: 5672}
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+          podSelector:
+            matchLabels:
+              k8s-app: kube-dns
+      ports:
+        - {protocol: UDP, port: 53}
+        - {protocol: TCP, port: 53}
+    - to:
+        - ipBlock: {cidr: 10.43.0.0/16}  # central service CIDR
+      ports:
+        - {protocol: TCP, port: 50051}

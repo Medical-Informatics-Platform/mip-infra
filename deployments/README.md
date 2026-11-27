@@ -33,4 +33,4 @@ The `mip-infrastructure` ApplicationSet auto-discovers each directory under
 
 ## Adding or customising a federation
 
-See [`../docs/operations.md`](../docs/operations.md#adding-a-federation).
+See [`../docs/operations.md`](../docs/operations.md#add-a-federation).

@@ -23,10 +23,11 @@ submariner:
 
   # Cable driver - From deployed config
   cableDriver: libreswan
-# Broker connection - From deployed cluster
-# NOTE: token and ca are empty here - the brokerK8sSecret field will be
-# set via a strategic merge patch in kustomization.yaml to reference
-# the submariner-broker-secret created by the PostSync hook
+
+  # Broker credentials: token Secret of the operator's broker account (broker-credentials.yaml).
+  # The operator mounts it as files, not as environment variables.
+  brokerK8sSecret: submariner-broker-client-token
+# Broker connection. token and ca stay empty: the credentials come from submariner.brokerK8sSecret.
 broker:
   server: mip.chuv.cscs.ch:6443
   token: ''
@@ -41,13 +42,11 @@ rbac:
 ipsec:
   natPort: 4500
   ikePort: 500
-# Service configuration for gateway LoadBalancer
-service:
-  annotations:
-    metallb.universe.tf/address-pool: pool-no-auto
-    metallb.io/address-pool: pool-no-auto
-  loadBalancerIP: 148.187.143.43
-  externalTrafficPolicy: Local
+  # IPsec PSK, key psk. Created once by hand, not in git (common/submariner/README.md, Install, step 2).
+  # Remote clusters get the same value at enrollment.
+  pskSecret: submariner-ipsec-psk
+# The gateway LoadBalancer address and MetalLB pool are set in kustomization.yaml
+# (spec.loadBalancerServiceAnnotations); the chart has no value for them.
 # Resource requirements
 operator:
   resources:

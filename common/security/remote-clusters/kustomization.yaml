@@ -1,6 +1,8 @@
 ---
-# common/security/remote-clusters: cluster-wide confinement of the Submariner
-# remote CIDRs. Plain manifests; kustomize needs no Calico CRD to render them.
+# common/security/remote-clusters: the Calico tier for traffic exchanged with
+# remote clusters and its end-of-tier policy. Generic: the per-federation
+# policies come from ../remote-networks. Plain manifests; kustomize needs no
+# Calico CRD to render them.
 apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
-resources: [global-deny-remote-cidrs.yaml]
+resources: [tier.yaml]

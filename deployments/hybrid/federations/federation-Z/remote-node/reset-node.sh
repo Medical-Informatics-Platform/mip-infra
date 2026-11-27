@@ -5,8 +5,9 @@
 # Removes: the microk8s snap and its data, the helm and kubectl snaps when
 # present (MicroK8s provides both), subctl,
 # the MicroK8s kubeconfig and Helm caches of the invoking user, the persisted
-# cluster ID, leftover credential files in the invoking user's home, and the
-# Submariner and Calico network state (interfaces, IPsec state, policy routes).
+# cluster ID, leftover credential files in the invoking user's home, the route
+# watchdog, and the Submariner and Calico network state (interfaces, IPsec state,
+# policy routes).
 # Remaining kernel state (iptables chains, ipsets) is cleared by a reboot.
 #
 # Usage:
@@ -15,7 +16,7 @@
 #   sudo ./reset-node.sh --reboot           # reboot when done
 #
 # After the reset, remove the stale registration of this node on the central
-# cluster (README, section "Removing a remote node") before joining again.
+# cluster (README, section "Remove a remote node") before joining again.
 set -uo pipefail
 
 KEEP_ID=false
@@ -95,6 +96,15 @@ if [[ -n "$user_home" ]]; then
                 -o -name 'local-values.yaml' -o -name 'secrets-values.yaml' -o -name 'broker-info.subm*' \) -print0)
 fi
 
+if [[ -f /etc/systemd/system/submariner-route-watchdog.service ]]; then
+  log "Removing the route watchdog (unit submariner-route-watchdog)"
+  systemctl disable --now submariner-route-watchdog.service >/dev/null 2>&1 || true
+  rm -f /etc/systemd/system/submariner-route-watchdog.service /usr/local/sbin/submariner-route-watchdog
+  systemctl daemon-reload
+fi
+# The watchdog's credential (a token of the cluster removed above).
+rm -rf /etc/submariner-route-watchdog
+
 log "Clearing Submariner and Calico network state"
 for link in vx-submariner vxlan.calico; do
   if ip link show "$link" >/dev/null 2>&1; then
@@ -116,7 +126,7 @@ cat <<EOF
 Reset complete. Remaining kernel state (iptables chains, ipsets) is cleared by a
 reboot; continue with preflight.sh and setup-tools.sh afterwards.
 On the central cluster, delete the stale broker objects of this node's previous
-cluster ID (README, section "Removing a remote node").
+cluster ID (README, section "Remove a remote node").
 EOF
 
 if [[ "$REBOOT" == true ]]; then

@@ -6,9 +6,17 @@
 # (federation-default-deny, federation-namespace-isolation). Every rule below
 # allows one component on one port; the default deny covers the rest.
 #
-# Remote node registry: one ipBlock per node in every rule. The same CIDRs
-# appear in common/security/remote-clusters/global-deny-remote-cidrs.yaml and
-# both files change together (scripts/check-remote-cidrs.sh asserts it).
+# Remote nodes reach one central component, the aggregation server. The
+# controller's HTTP API (5000) and the Flower server on the global worker (8080)
+# are closed to them: the API carries no authentication and lets a caller list
+# datasets and start computations, and only the client of a Flower algorithm
+# would need either port. Flower algorithms therefore cannot use datasets held
+# by remote nodes.
+#
+# Remote node registry: one ipBlock per node in every rule. The same CIDRs are
+# the entries of ../remote-networks.yaml, from which the Calico policy
+# remote-clusters.federation-z is built: it passes them to this namespace
+# only. Both files change together (scripts/check-remote-cidrs.sh asserts it).
 #   node 1: pod CIDR 10.3.0.0/16 (service CIDR 10.152.185.0/24, not needed here)
 #   node 2: pod CIDR 10.4.0.0/16 (service CIDR 10.152.186.0/24, not needed here)
 #
@@ -19,32 +27,6 @@
 # packets are not masqueraded and the pod sees the remote pod address. No pod
 # on this side dials a remote ClusterIP: the exported worker Service is
 # headless and resolves to remote pod addresses.
-apiVersion: networking.k8s.io/v1
-kind: NetworkPolicy
-metadata:
-  name: remote-workers-to-controller
-  namespace: federation-z
-  labels:
-    app.kubernetes.io/name: federation-remote-access
-    app.kubernetes.io/part-of: federation-z
-    mip.federation-type: hybrid
-spec:
-  podSelector:
-    matchLabels:
-      app: exaflow-controller
-  policyTypes: [Ingress]
-  ingress:
-    # Flower client processes started on remote workers call the controller
-    # HTTP API: GET /flower/input, GET /cdes_metadata, POST /flower/result
-    # (exaflow/algorithms/flower/inputdata_preprocessing.py). They reach it via
-    # exaflow-controller-service.federation-z.svc.clusterset.local:5000.
-    - from:
-        - ipBlock: {cidr: 10.3.0.0/16}  # node 1
-        - ipBlock: {cidr: 10.4.0.0/16}  # node 2
-      ports:
-        - protocol: TCP
-          port: 5000
----
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
@@ -96,32 +78,3 @@ spec:
       ports:
         - protocol: TCP
           port: 50051
----
-apiVersion: networking.k8s.io/v1
-kind: NetworkPolicy
-metadata:
-  name: remote-workers-to-flower-server
-  namespace: federation-z
-  labels:
-    app.kubernetes.io/name: federation-remote-access
-    app.kubernetes.io/part-of: federation-z
-    mip.federation-type: hybrid
-spec:
-  podSelector:
-    matchLabels:
-      app: exaflow-worker
-      nodeType: globalworker
-  policyTypes: [Ingress]
-  ingress:
-    # The Flower server runs on the global worker: the controller starts it
-    # bound to <global worker pod address>:<flower.server_port> and hands the
-    # same address to every local worker, whose Flower client dials it
-    # (exaflow/controller/services/flower/strategies.py). Remote clients reach
-    # the pod address directly through the tunnel. The port is only open while
-    # a Flower algorithm runs. Value flower.server_port of the exaflow chart.
-    - from:
-        - ipBlock: {cidr: 10.3.0.0/16}  # node 1
-        - ipBlock: {cidr: 10.4.0.0/16}  # node 2
-      ports:
-        - protocol: TCP
-          port: 8080

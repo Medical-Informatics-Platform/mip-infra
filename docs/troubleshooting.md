@@ -29,7 +29,7 @@ Order is: `default` AppProject → `mip-argo-project-infrastructure` →`argo-pr
 
 Some Argo CD installs protect it. Either:
 - Force it: `argocd proj delete default --cascade` (admin required).
-- Or rely on the deny-all override in [`base/argo-projects.yaml`](../base/argo-projects.yaml) — it overwrites `default` with empty allowlists.
+- Or rely on the deny-all override in [`base/argo-projects/argo-projects.yaml`](../base/argo-projects/argo-projects.yaml) — it overwrites `default` with empty allowlists.
 
 ### Application stuck `OutOfSync` or `Unknown`
 
@@ -125,7 +125,7 @@ Cause: a values file uses a Go template expression as a YAML map key
 
 ### Workload pods stuck `ContainerCreating` / `Init`
 
-The pod is waiting for a secret. Run [`scripts/gen_secrets.sh`](../scripts/gen_secrets.sh) (see [getting-started.md §3](getting-started.md#3-provision-required-secrets)) and resync.
+The pod is waiting for a secret. Run [`scripts/gen_secrets.sh`](../scripts/gen_secrets.sh) (see [getting-started.md §6](getting-started.md#6-create-the-secrets)) and resync.
 
 ### Browser cannot reach the Argo CD UI, but `argocd login --grpc-web` works
 

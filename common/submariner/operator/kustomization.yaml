@@ -4,114 +4,21 @@ kind: Kustomization
 helmCharts:
   - name: submariner-operator
     repo: https://raw.githubusercontent.com/submariner-io/submariner-charts/gh-pages/charts
-    version: 0.24.1
+    version: 0.25.0
     releaseName: submariner-operator
     namespace: submariner-operator
     valuesFile: values.yaml
     includeCRDs: true
-resources: [gateway-loadbalancer-ip.yaml, gateway-node-networkd.yaml]
+resources:
+  - broker-credentials.yaml
+  - gateway-node-networkd.yaml
+  - gateway-route-watchdog.yaml
 patches:
-  - target:
-      group: rbac.authorization.k8s.io
-      kind: ClusterRole
-      name: submariner-operator
-    patch: |-
-      $patch: delete
-      apiVersion: rbac.authorization.k8s.io/v1
-      kind: ClusterRole
-      metadata:
-        name: submariner-operator
-  - target:
-      group: rbac.authorization.k8s.io
-      kind: ClusterRoleBinding
-      name: submariner-operator
-    patch: |-
-      $patch: delete
-      apiVersion: rbac.authorization.k8s.io/v1
-      kind: ClusterRoleBinding
-      metadata:
-        name: submariner-operator
-  - target:
-      group: rbac.authorization.k8s.io
-      kind: ClusterRole
-      name: submariner-gateway
-    patch: |-
-      $patch: delete
-      apiVersion: rbac.authorization.k8s.io/v1
-      kind: ClusterRole
-      metadata:
-        name: submariner-gateway
-  - target:
-      group: rbac.authorization.k8s.io
-      kind: ClusterRoleBinding
-      name: submariner-gateway
-    patch: |-
-      $patch: delete
-      apiVersion: rbac.authorization.k8s.io/v1
-      kind: ClusterRoleBinding
-      metadata:
-        name: submariner-gateway
-  - target:
-      group: rbac.authorization.k8s.io
-      kind: ClusterRole
-      name: submariner-routeagent
-    patch: |-
-      $patch: delete
-      apiVersion: rbac.authorization.k8s.io/v1
-      kind: ClusterRole
-      metadata:
-        name: submariner-routeagent
-  - target:
-      group: rbac.authorization.k8s.io
-      kind: ClusterRoleBinding
-      name: submariner-routeagent
-    patch: |-
-      $patch: delete
-      apiVersion: rbac.authorization.k8s.io/v1
-      kind: ClusterRoleBinding
-      metadata:
-        name: submariner-routeagent
-  - target:
-      group: rbac.authorization.k8s.io
-      kind: ClusterRole
-      name: submariner-lighthouse-agent
-    patch: |-
-      $patch: delete
-      apiVersion: rbac.authorization.k8s.io/v1
-      kind: ClusterRole
-      metadata:
-        name: submariner-lighthouse-agent
-  - target:
-      group: rbac.authorization.k8s.io
-      kind: ClusterRoleBinding
-      name: submariner-lighthouse-agent
-    patch: |-
-      $patch: delete
-      apiVersion: rbac.authorization.k8s.io/v1
-      kind: ClusterRoleBinding
-      metadata:
-        name: submariner-lighthouse-agent
-  - target:
-      group: rbac.authorization.k8s.io
-      kind: ClusterRole
-      name: submariner-lighthouse-coredns
-    patch: |-
-      $patch: delete
-      apiVersion: rbac.authorization.k8s.io/v1
-      kind: ClusterRole
-      metadata:
-        name: submariner-lighthouse-coredns
-  - target:
-      group: rbac.authorization.k8s.io
-      kind: ClusterRoleBinding
-      name: submariner-lighthouse-coredns
-    patch: |-
-      $patch: delete
-      apiVersion: rbac.authorization.k8s.io/v1
-      kind: ClusterRoleBinding
-      metadata:
-        name: submariner-lighthouse-coredns
-  # Patch to add brokerK8sSecret since the chart doesn't support it in values
+  # Gateway LoadBalancer address and MetalLB pool. The operator owns the Service submariner-gateway
+  # and replaces its spec on every reconcile, but merges spec.loadBalancerServiceAnnotations into it.
+  # The chart has no value for this field. Remote nodes accept IPsec only from this address. It is
+  # also set in deployments/hybrid/federations/federation-Z/remote-node/central.env and in the
+  # remote-nodes group of the hardening inventory; change all three together.
   - target:
       group: submariner.io
       kind: Submariner
@@ -122,8 +29,111 @@ patches:
       metadata:
         name: submariner
       spec:
-        brokerK8sSecret: submariner-broker-secret
-        ceIPSecPSKSecret: submariner-ipsec-psk
+        loadBalancerServiceAnnotations:
+          metallb.io/address-pool: pool-no-auto
+          metallb.universe.tf/address-pool: pool-no-auto
+          metallb.io/loadBalancerIPs: 148.187.143.43
+          metallb.universe.tf/loadBalancerIPs: 148.187.143.43
+  - target:
+      group: rbac.authorization.k8s.io
+      kind: ClusterRole
+      name: submariner-operator
+    patch: |-
+      $patch: delete
+      apiVersion: rbac.authorization.k8s.io/v1
+      kind: ClusterRole
+      metadata:
+        name: submariner-operator
+  - target:
+      group: rbac.authorization.k8s.io
+      kind: ClusterRoleBinding
+      name: submariner-operator
+    patch: |-
+      $patch: delete
+      apiVersion: rbac.authorization.k8s.io/v1
+      kind: ClusterRoleBinding
+      metadata:
+        name: submariner-operator
+  - target:
+      group: rbac.authorization.k8s.io
+      kind: ClusterRole
+      name: submariner-gateway
+    patch: |-
+      $patch: delete
+      apiVersion: rbac.authorization.k8s.io/v1
+      kind: ClusterRole
+      metadata:
+        name: submariner-gateway
+  - target:
+      group: rbac.authorization.k8s.io
+      kind: ClusterRoleBinding
+      name: submariner-gateway
+    patch: |-
+      $patch: delete
+      apiVersion: rbac.authorization.k8s.io/v1
+      kind: ClusterRoleBinding
+      metadata:
+        name: submariner-gateway
+  - target:
+      group: rbac.authorization.k8s.io
+      kind: ClusterRole
+      name: submariner-routeagent
+    patch: |-
+      $patch: delete
+      apiVersion: rbac.authorization.k8s.io/v1
+      kind: ClusterRole
+      metadata:
+        name: submariner-routeagent
+  - target:
+      group: rbac.authorization.k8s.io
+      kind: ClusterRoleBinding
+      name: submariner-routeagent
+    patch: |-
+      $patch: delete
+      apiVersion: rbac.authorization.k8s.io/v1
+      kind: ClusterRoleBinding
+      metadata:
+        name: submariner-routeagent
+  - target:
+      group: rbac.authorization.k8s.io
+      kind: ClusterRole
+      name: submariner-lighthouse-agent
+    patch: |-
+      $patch: delete
+      apiVersion: rbac.authorization.k8s.io/v1
+      kind: ClusterRole
+      metadata:
+        name: submariner-lighthouse-agent
+  - target:
+      group: rbac.authorization.k8s.io
+      kind: ClusterRoleBinding
+      name: submariner-lighthouse-agent
+    patch: |-
+      $patch: delete
+      apiVersion: rbac.authorization.k8s.io/v1
+      kind: ClusterRoleBinding
+      metadata:
+        name: submariner-lighthouse-agent
+  - target:
+      group: rbac.authorization.k8s.io
+      kind: ClusterRole
+      name: submariner-lighthouse-coredns
+    patch: |-
+      $patch: delete
+      apiVersion: rbac.authorization.k8s.io/v1
+      kind: ClusterRole
+      metadata:
+        name: submariner-lighthouse-coredns
+  - target:
+      group: rbac.authorization.k8s.io
+      kind: ClusterRoleBinding
+      name: submariner-lighthouse-coredns
+    patch: |-
+      $patch: delete
+      apiVersion: rbac.authorization.k8s.io/v1
+      kind: ClusterRoleBinding
+      metadata:
+        name: submariner-lighthouse-coredns
   # Namespaced RBAC resources
   - target:
       group: rbac.authorization.k8s.io

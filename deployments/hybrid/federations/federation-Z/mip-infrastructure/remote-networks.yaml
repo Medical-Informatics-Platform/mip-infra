@@ -1,0 +1,19 @@
+---
+# Remote nodes of this federation, one entry per node. The ApplicationSet
+# federation-remote-networks (common/security/netpol.yaml) reads this file and
+# builds the Calico policy remote-clusters.<namespace> with the chart
+# common/security/remote-networks: the networks below are passed only to the
+# exaflow components of this federation's namespace and denied everywhere else
+# on the central cluster.
+#
+# Every entry repeats the clusterCidr and serviceCidr of one
+# ../remote-node/submariner-values*.yaml, and every pod CIDR is an ipBlock in
+# each rule of submariner-policies/network-policy.yaml. The three places
+# change together (scripts/check-remote-cidrs.sh asserts it).
+remoteNodes:
+  # node 1
+  - podCidr: 10.3.0.0/16
+    serviceCidr: 10.152.185.0/24
+  # node 2
+  - podCidr: 10.4.0.0/16
+    serviceCidr: 10.152.186.0/24

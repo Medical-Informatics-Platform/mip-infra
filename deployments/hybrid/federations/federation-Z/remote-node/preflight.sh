@@ -4,19 +4,25 @@
 #   ./preflight.sh                 install stage: OS, resources, egress, broker
 #                                  reachability, kernel modules, CIDR overlap
 #   ./preflight.sh --stage join    join stage: credential files, broker TLS and
-#                                  token, MicroK8s settings, gateway label, tool versions
+#                                  token, MicroK8s settings (authorization of the API server and
+#                                  of the kubelet, Calico tier access), gateway label, tool versions
+#   ./preflight.sh --stage health  joined node: connection to the central cluster and its
+#                                  address, gateway policy routing, networkd drop-in, route
+#                                  watchdog, IPsec firewall, authorization of the API server and of
+#                                  the kubelet, Calico tier access, worker export, clusterset DNS,
+#                                  aggregation server reachable from the worker
 #
 # Prints one line per check (PASS, WARN or FAIL) and exits non-zero when any
 # check fails. Run as the user who will run join-submariner.sh.
 #
 # Parameters (environment variables, all optional):
 #   BROKER_SERVER         host:port of the broker API; default from submariner-values.yaml
-#   CENTRAL_GATEWAY_IP    public IP of the central gateway, used for a route check only
+#   CENTRAL_GATEWAY_IP    central gateway LoadBalancer address, the only IPsec peer; default from central.env
 #   CENTRAL_POD_CIDR      default 10.42.0.0/16
 #   CENTRAL_SERVICE_CIDR  default 10.43.0.0/16
 #   IPv4_CLUSTER_CIDR     default 10.3.0.0/16
 #   IPv4_SERVICE_CIDR     default 10.152.185.0/24
-#   SUBMARINER_VERSION    default 0.24.1
+#   SUBMARINER_VERSION    default 0.25.0
 #   CREDENTIALS_DIR       default: current directory (join stage)
 # shellcheck disable=SC2015
 set -uo pipefail
@@ -25,25 +31,25 @@ STAGE=install
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --stage) STAGE="${2:-}"; shift 2 ;;
-    -h|--help) sed -n '2,22p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    -h|--help) sed -n '2,26p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
     *) echo "unknown argument: $1" >&2; exit 2 ;;
   esac
 done
 case "$STAGE" in
-  install|join) ;;
-  *) echo "--stage must be install or join" >&2; exit 2 ;;
+  install|join|health) ;;
+  *) echo "--stage must be install, join or health" >&2; exit 2 ;;
 esac
 
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 values_file="${here}/submariner-values.yaml"
 BROKER_SERVER="${BROKER_SERVER:-$(sed -n 's/^  server:[[:space:]]*\([^[:space:]#]*\).*/\1/p' "$values_file" 2>/dev/null | head -1)}"
 BROKER_HOST="${BROKER_SERVER%%:*}"
-CENTRAL_GATEWAY_IP="${CENTRAL_GATEWAY_IP:-}"
+CENTRAL_GATEWAY_IP="${CENTRAL_GATEWAY_IP:-$(sed -n 's/^CENTRAL_GATEWAY_IP=//p' "${here}/central.env" 2>/dev/null | head -1)}"
 CENTRAL_POD_CIDR="${CENTRAL_POD_CIDR:-10.42.0.0/16}"
 CENTRAL_SERVICE_CIDR="${CENTRAL_SERVICE_CIDR:-10.43.0.0/16}"
 IPv4_CLUSTER_CIDR="${IPv4_CLUSTER_CIDR:-10.3.0.0/16}"
 IPv4_SERVICE_CIDR="${IPv4_SERVICE_CIDR:-10.152.185.0/24}"
-SUBMARINER_VERSION="${SUBMARINER_VERSION:-0.24.1}"
+SUBMARINER_VERSION="${SUBMARINER_VERSION:-0.25.0}"
 CREDENTIALS_DIR="${CREDENTIALS_DIR:-$PWD}"
 BROKER_SA_PREFIX=system:serviceaccount:submariner-k8s-broker:cluster-
 
@@ -53,6 +59,97 @@ pass() { printf 'PASS  %-40s %s\n' "$1" "${2:-}"; }
 warn() { printf 'WARN  %-40s %s\n' "$1" "${2:-}"; warns=$((warns + 1)); }
 fail() { printf 'FAIL  %-40s %s\n' "$1" "${2:-}"; fails=$((fails + 1)); }
 http_code() { curl -sSk --max-time 8 -o /dev/null -w '%{http_code}' "$@" 2>/dev/null || echo 000; }
+# IPsec firewall of setup-microk8s.sh: unit enabled and active, table written for CENTRAL_GATEWAY_IP.
+check_hub_firewall() {
+  if systemctl -q is-enabled submariner-hub-firewall.service 2>/dev/null \
+    && systemctl -q is-active submariner-hub-firewall.service 2>/dev/null \
+    && grep -qsF "!= ${CENTRAL_GATEWAY_IP} counter drop" /etc/submariner-hub/firewall.nft; then
+    pass "IPsec only with the central gateway" "${CENTRAL_GATEWAY_IP} (unit submariner-hub-firewall)"
+  else
+    fail "IPsec only with the central gateway" "re-run setup-microk8s.sh; without it the gateway also builds tunnels to other remote nodes"
+  fi
+}
+
+# Route watchdog of setup-microk8s.sh: the unit runs with its own account, which may restart the route
+# agent and nothing else.
+check_route_watchdog() {
+  local sa=system:serviceaccount:submariner-operator:submariner-route-watchdog problems="" out
+  systemctl -q is-enabled submariner-route-watchdog.service 2>/dev/null \
+    && systemctl -q is-active submariner-route-watchdog.service 2>/dev/null \
+    || problems="${problems} unit not enabled or not active;"
+  [[ -f /etc/submariner-route-watchdog/kubeconfig ]] \
+    || problems="${problems} credential /etc/submariner-route-watchdog/kubeconfig missing;"
+  [[ -z "$(systemctl show --property SupplementaryGroups --value submariner-route-watchdog.service 2>/dev/null)" ]] \
+    || problems="${problems} old unit that reads the admin kubeconfig;"
+  [[ "$(kubectl auth can-i get secrets --namespace submariner-operator --as="$sa" 2>/dev/null)" == no ]] \
+    || problems="${problems} its account may read Secrets;"
+  [[ "$(kubectl auth can-i list pods --namespace submariner-operator --as="$sa" 2>/dev/null)" == no ]] \
+    || problems="${problems} its account may list pods;"
+  [[ "$(kubectl auth can-i deletecollection pods --namespace submariner-operator --as="$sa" 2>/dev/null)" == yes ]] \
+    || problems="${problems} its account may not restart the route agent (Submariner removed and joined again?);"
+  # The admission policy must refuse every other pod; tested on the gateway pod once it exists.
+  if kubectl -n submariner-operator get pods -l app=submariner-gateway -o name 2>/dev/null | grep -q .; then
+    if out="$(kubectl --as="$sa" delete --raw \
+      '/api/v1/namespaces/submariner-operator/pods?labelSelector=app%3Dsubmariner-gateway&dryRun=All' 2>&1)" \
+      || ! grep -qF "ValidatingAdmissionPolicy 'submariner-route-watchdog'" <<<"$out"; then
+      problems="${problems} its admission policy does not stop it from deleting the gateway pod;"
+    fi
+  fi
+  if [[ -z "$problems" ]]; then
+    pass "route watchdog" "unit submariner-route-watchdog, own account"
+  else
+    fail "route watchdog" "${problems# } re-run setup-microk8s.sh; without the watchdog the connection stays in error after a systemd-networkd restart"
+  fi
+}
+
+# The API server must authorize with RBAC. With the MicroK8s default, AlwaysAllow, any pod token can
+# read the broker token and the PSK. The running server gives the verdict: an identity without roles
+# must not read Secrets. The arguments file shows what the next restart applies. The probe
+# impersonates, so it needs the MicroK8s admin kubeconfig.
+check_api_authorization() {
+  local mode answer
+  mode="$(sed -n 's/^--authorization-mode=//p' /var/snap/microk8s/current/args/kube-apiserver 2>/dev/null | tail -1)"
+  answer="$(kubectl auth can-i get secrets --namespace kube-system --as=preflight-rbac-probe 2>/dev/null)"
+  if [[ "$answer" == yes ]]; then
+    fail "API authorization" "mode ${mode:-unknown}: every authenticated request is allowed, any pod reads the Submariner credentials; run setup-microk8s.sh (enables RBAC, restarts the control plane once)"
+  elif [[ "$mode" == *AlwaysAllow* ]]; then
+    fail "API authorization" "the arguments file sets AlwaysAllow and the next restart applies it; run setup-microk8s.sh"
+  elif [[ "$answer" == no ]]; then
+    pass "API authorization" "${mode:-RBAC}; an identity without a role is refused"
+  else
+    warn "API authorization" "not verified: the probe needs the MicroK8s admin kubeconfig (mode ${mode:-not readable})"
+  fi
+}
+
+# The kubelet API (port 10250) accepts service-account tokens. Without Webhook authorization it
+# allows every authenticated request: a pod that reaches the port could run commands in any
+# container. The probe sends a ten-minute token without roles: 403 means Webhook, 200 means the
+# kubelet allows everything.
+check_kubelet_authorization() {
+  local mode token code=""
+  mode="$(sed -n 's/^--authorization-mode=//p' /var/snap/microk8s/current/args/kubelet 2>/dev/null | tail -1)"
+  token="$(kubectl create token default --namespace default --duration 10m 2>/dev/null)"
+  if [[ -n "$token" ]]; then
+    code="$(printf 'header = "Authorization: Bearer %s"\n' "$token" \
+      | curl -sk --max-time 8 -o /dev/null -w '%{http_code}' -K - https://127.0.0.1:10250/pods 2>/dev/null)"
+  fi
+  case "$code" in
+    403) pass "kubelet authorization" "${mode:-Webhook}; a token without a role is refused" ;;
+    200) fail "kubelet authorization" "mode ${mode:-unset}: the kubelet allows every authenticated request on port 10250, any service-account token can run commands in every pod; run setup-microk8s.sh (sets Webhook, restarts the control plane once)" ;;
+    *) warn "kubelet authorization" "not verified: HTTP ${code:-none} from the kubelet for the probe token (mode ${mode:-unset})" ;;
+  esac
+}
+
+# With RBAC the kube-controller-manager must read Calico tiers, or its garbage collector and quota
+# controller never sync. setup-microk8s.sh grants it (calico-tier-getter).
+check_tier_access() {
+  kubectl get tiers.projectcalico.org >/dev/null 2>&1 || return 0
+  if [[ "$(kubectl auth can-i get tiers.projectcalico.org --as=system:kube-controller-manager 2>/dev/null)" == yes ]]; then
+    pass "controller manager reads Calico tiers" "ClusterRole calico-tier-getter"
+  else
+    fail "controller manager reads Calico tiers" "refused: the garbage collector never completes a sync (journalctl -u snap.microk8s.daemon-kubelite); run setup-microk8s.sh"
+  fi
+}
 
 [[ -n "$BROKER_SERVER" ]] || { echo "BROKER_SERVER is empty and could not be read from ${values_file}" >&2; exit 2; }
 echo "Stage: ${STAGE}    Broker: ${BROKER_SERVER}"
@@ -234,6 +331,9 @@ stage_join() {
     else
       fail "hostname pinned" "re-run setup-microk8s.sh; a boot under another instance name registers a second node and strands the gateway"
     fi
+    check_api_authorization
+    check_kubelet_authorization
+    check_tier_access
   else
     fail "kubectl reaches MicroK8s" "run 'newgrp microk8s' or check ~/.kube/config"
   fi
@@ -245,14 +345,102 @@ stage_join() {
   else
     fail "systemd-networkd keeps foreign routes" "re-run setup-microk8s.sh; a networkd restart (unattended upgrades) deletes the gateway's policy routing and the connection turns to error"
   fi
+  check_hub_firewall
+  check_route_watchdog
   have="$(subctl version 2>/dev/null | grep -oE 'v[0-9]+\.[0-9]+\.[0-9]+' | head -1)"
   [[ "$have" == "v${SUBMARINER_VERSION}" ]] && pass "subctl version" "$have" || fail "subctl version" "${have:-missing}; expected v${SUBMARINER_VERSION}"
   command -v helm >/dev/null 2>&1 && pass "helm available" "$(helm version --short 2>/dev/null)" || fail "helm available" "run setup-microk8s.sh (creates the helm alias)"
 }
 
+# Health of a joined node, as seen from the node. enrollment/check-central.sh checks the central side.
+# Each gateway reports only its own pings, so the two sides can differ.
+stage_health() {
+  if ! kubectl get nodes >/dev/null 2>&1; then
+    fail "kubectl reaches MicroK8s" "run 'newgrp microk8s' or check ~/.kube/config"
+    return
+  fi
+  local ns=submariner-operator local_id central_id central_ep status using remote_cidrs routing missing c dropin exports not_ready
+  local_id="$(kubectl -n "$ns" get submariners.submariner.io -o jsonpath='{.items[0].spec.clusterID}' 2>/dev/null)"
+  central_id="$(kubectl -n "$ns" get endpoints.submariner.io -o jsonpath='{range .items[*]}{.spec.cluster_id}{" "}{.spec.subnets}{"\n"}{end}' 2>/dev/null \
+    | grep -F "\"${CENTRAL_POD_CIDR}\"" | awk '{print $1}' | head -1)"
+  if [[ -z "$central_id" ]]; then
+    fail "central endpoint known" "no Endpoint with ${CENTRAL_POD_CIDR}; check the gateway log for broker errors"
+  else
+    central_ep="$(kubectl -n "$ns" get endpoints.submariner.io -o jsonpath="{range .items[?(@.spec.cluster_id==\"${central_id}\")]}{.spec.hostname} {.spec.private_ip} since {.metadata.creationTimestamp}{end}" 2>/dev/null)"
+    pass "central endpoint known" "${central_id}: ${central_ep}"
+    status="$(kubectl -n "$ns" get gateways.submariner.io -o jsonpath="{range .items[?(@.status.haStatus==\"active\")]}{range .status.connections[?(@.endpoint.cluster_id==\"${central_id}\")]}{.status} {.statusMessage}{end}{end}" 2>/dev/null)"
+    case "$status" in
+      connected*) pass "connection to the central cluster" "connected" ;;
+      error*) fail "connection to the central cluster" "${status}; SAs up: see policy routing below, otherwise the tunnel (README, Troubleshooting)" ;;
+      *) fail "connection to the central cluster" "${status:-none}; if it stays connecting, compare '${central_ep}' with the central gateway node; refresh an old endpoint with kubectl -n ${ns} delete pod -l app=submariner-gateway" ;;
+    esac
+    # The tunnel must run through the LoadBalancer address, the only peer the firewall accepts.
+    using="$(kubectl -n "$ns" get gateways.submariner.io -o jsonpath="{range .items[?(@.status.haStatus==\"active\")]}{range .status.connections[?(@.endpoint.cluster_id==\"${central_id}\")]}{.usingIP}{end}{end}" 2>/dev/null)"
+    if [[ -n "$CENTRAL_GATEWAY_IP" && "$using" == "$CENTRAL_GATEWAY_IP" ]]; then
+      pass "tunnel through the central gateway address" "$using"
+    else
+      fail "tunnel through the central gateway address" "${using:-none}, expected ${CENTRAL_GATEWAY_IP:-unset}; recreate the gateway pod to rerun NAT discovery: kubectl -n ${ns} delete pod -l app=submariner-gateway"
+    fi
+  fi
+  remote_cidrs="$(kubectl -n "$ns" get endpoints.submariner.io -o jsonpath='{range .items[*]}{.spec.cluster_id}{" "}{.spec.subnets}{"\n"}{end}' 2>/dev/null \
+    | awk -v me="$local_id" '$1 != me {print $2}' | tr -d '[]"' | tr ',' '\n' | sed '/^$/d' | sort -u)"
+  routing="$(ip route show table 150 2>/dev/null | awk '{print $1}')"
+  missing=""
+  for c in $remote_cidrs; do
+    grep -qx "$c" <<<"$routing" || missing="${missing} ${c}"
+  done
+  if ip rule show | grep -q 'lookup 150' && [[ -n "$remote_cidrs" && -z "$missing" ]]; then
+    pass "gateway policy routing" "rule lookup 150, table 150 covers $(wc -w <<<"$remote_cidrs" | tr -d ' ') remote CIDRs"
+  else
+    fail "gateway policy routing" "rule or routes missing:${missing:- rule}; kubectl -n ${ns} delete pod -l app=submariner-routeagent"
+  fi
+  dropin=/etc/systemd/networkd.conf.d/10-submariner-foreign-routes.conf
+  if grep -qs '^ManageForeignRoutes=no' "$dropin" && grep -qs '^ManageForeignRoutingPolicyRules=no' "$dropin"; then
+    pass "systemd-networkd keeps foreign routes" "$dropin"
+  else
+    fail "systemd-networkd keeps foreign routes" "re-run setup-microk8s.sh"
+  fi
+  check_route_watchdog
+  check_hub_firewall
+  check_api_authorization
+  check_kubelet_authorization
+  check_tier_access
+  # The worker's export must be Ready, that is, published to the broker. Imports and DNS answer from
+  # local copies when publishing fails, so the DNS check below does not detect it.
+  exports="$(kubectl -n federation-z get serviceexports.multicluster.x-k8s.io \
+    -o jsonpath='{range .items[*]}{.metadata.name}={range .status.conditions[?(@.type=="Ready")]}{.status}{end}{" "}{end}' 2>/dev/null)"
+  if [[ -z "${exports// /}" ]]; then
+    warn "worker export published" "no ServiceExport in federation-z (step 8 not done)"
+  else
+    not_ready="$(tr ' ' '\n' <<<"$exports" | sed '/^$/d' | grep -v '=True$' | tr '\n' ' ')"
+    if [[ -z "$not_ready" ]]; then
+      pass "worker export published" "$exports"
+    else
+      fail "worker export published" "${not_ready}; see the Ready message (kubectl -n federation-z get serviceexport -o yaml) and kubectl -n ${ns} logs deploy/submariner-lighthouse-agent"
+    fi
+  fi
+  if kubectl -n federation-z get pod exaflow-localworker-0 >/dev/null 2>&1; then
+    if kubectl -n federation-z exec exaflow-localworker-0 -- getent hosts exaflow-aggregation-service.federation-z.svc.clusterset.local >/dev/null 2>&1; then
+      pass "clusterset DNS from the worker" "exaflow-aggregation-service resolves"
+      # The name can resolve to an address that no longer answers (stale export on the central side).
+      if kubectl -n federation-z exec exaflow-localworker-0 -- python3 -c \
+        "import socket; socket.create_connection(('exaflow-aggregation-service.federation-z.svc.clusterset.local', 50051), 5)" >/dev/null 2>&1; then
+        pass "aggregation server answers the worker" "TCP 50051"
+      else
+        fail "aggregation server answers the worker" "the name resolves but TCP 50051 does not answer; on the central cluster run check-central.sh (published address, tier, NetworkPolicies)"
+      fi
+    else
+      fail "clusterset DNS from the worker" "does not resolve; Lighthouse serves the central records only while the connection is connected"
+    fi
+  else
+    warn "clusterset DNS from the worker" "no worker pod (step 8 not done)"
+  fi
+}
+
 case "$STAGE" in
   install) stage_install ;;
   join) stage_join ;;
+  health) stage_health ;;
 esac
 
 echo

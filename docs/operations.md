@@ -1,134 +1,107 @@
 # Operations
 
-Day-2 tasks: feature-branch development, adding federations, adding clusters, adding shared apps, customising values.
+Everyday tasks: work on a feature branch, add a federation, switch the notebook hub to the API proxy, change values, add a shared application, update dependencies.
 
-## Feature-branch workflow
+## Work on a feature branch
 
-To deploy a feature branch alongside `main` without disturbing it:
+Deploy a branch next to `main` without touching it.
 
-### 1. Install the pre-commit hook
+1. Install the pre-commit hook. It stops you from committing `main` revisions on a feature branch, and runs the AppProject RBAC lint:
 
-The hook prevents accidentally committing `main` revisions while on a feature branch (and runs the AppProject RBAC lint).
+   ```bash
+   cp .githooks/pre-commit .git/hooks/
+   chmod +x .git/hooks/pre-commit
+   ```
 
-```bash
-cp .githooks/pre-commit .git/hooks/
-chmod +x .git/hooks/pre-commit
-```
+2. If the branch needs [`base/mip-infrastructure/mip-infrastructure.yaml`](../base/mip-infrastructure/mip-infrastructure.yaml) to follow it, change `main` to the branch in `spec.generators[*].git.revision` and `spec.template.spec.source.targetRevision`. The hook blocks the commit if you forget one.
 
-### 2. Point the ApplicationSet at your branch
+3. Deploy the branch:
 
-If your changes need [`base/mip-infrastructure/mip-infrastructure.yaml`](../base/mip-infrastructure/mip-infrastructure.yaml) to track your branch, edit:
+   ```bash
+   CURRENT_BRANCH=$(git rev-parse --abbrev-ref HEAD)
+   SAFE_BRANCH_NAME=$(echo "$CURRENT_BRANCH" | sed 's/[^a-zA-Z0-9]/-/g')
 
-- `spec.generators[*].git.revision`
-- `spec.template.spec.source.targetRevision`
+   kubectl apply -f base/argo-projects/argo-projects.yaml   # AppProject generators from the branch
 
-Change `main` → `<your-branch>`. The pre-commit hook blocks the commit if you forget.
+   argocd app create "${SAFE_BRANCH_NAME}-infra-clusterset" \
+     --repo https://github.com/Medical-Informatics-Platform/mip-infra.git \
+     --path base/mip-infrastructure \
+     --revision "$CURRENT_BRANCH" \
+     --project mip-argo-project-infrastructure \
+     --dest-server https://kubernetes.default.svc \
+     --dest-namespace argocd-mip-team
 
-### 3. Deploy your branch
+   argocd app sync "${SAFE_BRANCH_NAME}-infra-clusterset"
+   argocd app get  "${SAFE_BRANCH_NAME}-infra-clusterset"
+   ```
 
-Same flow as the main bootstrap, but scoped to your branch name:
+4. Remove it:
 
-```bash
-CURRENT_BRANCH=$(git rev-parse --abbrev-ref HEAD)
-SAFE_BRANCH_NAME=$(echo "$CURRENT_BRANCH" | sed 's/[^a-zA-Z0-9]/-/g')
+   ```bash
+   argocd app delete "${SAFE_BRANCH_NAME}-infra-clusterset" --yes
+   argocd app delete "${SAFE_BRANCH_NAME}-argo-projects"    --yes
+   ```
 
-# Refresh the AppProject generators from your branch
-kubectl apply -f base/argo-projects/argo-projects.yaml
-
-argocd app create "${SAFE_BRANCH_NAME}-infra-clusterset" \
-  --repo https://github.com/Medical-Informatics-Platform/mip-infra.git \
-  --path base/mip-infrastructure \
-  --revision "$CURRENT_BRANCH" \
-  --project mip-argo-project-infrastructure \
-  --dest-server https://kubernetes.default.svc \
-  --dest-namespace argocd-mip-team
-
-argocd app sync "${SAFE_BRANCH_NAME}-infra-clusterset"
-argocd app get  "${SAFE_BRANCH_NAME}-infra-clusterset"
-```
-
-### 4. Tear down
-
-```bash
-argocd app delete "${SAFE_BRANCH_NAME}-infra-clusterset" --yes
-argocd app delete "${SAFE_BRANCH_NAME}-argo-projects"    --yes
-```
-
-## Adding a federation
+## Add a federation
 
 ### Local federation (everything on this cluster)
 
-1. Create a new directory under `deployments/local/federations/`, e.g.`federation-B/` in the correct repository.
-2. Copy `kustomization.yaml` and `customizations/` from an existing federation (the `federation-A` skeleton is a good starting point).
-3. Update `namePrefix` in `kustomization.yaml` to your federation name.
-4. Adjust per-federation values in `customizations/`.
-5. Commit and push to the branch the ApplicationSet tracks. The `mip-infrastructure` ApplicationSet auto-discovers the new directory and creates the wrapper Application; `argo-projects` ApplicationSet creates the matching `mip-argo-project-federation-<name>` AppProject.
-6. Provision the per-federation secrets — see [getting-started.md §6](getting-started.md#6-provision-required-secrets).
-7. Notebooks need no RBAC step: within five minutes the `mip-notebook-rbac-manager` CronJob binds the notebook operator and JupyterHub in the new namespace and adds it to the operator's watch list. Check with `kubectl -n federation-<name> get rolebinding mip-notebook-operator mip-jupyterhub`.
+1. Create `deployments/local/federations/federation-<name>/`. Copy `kustomization.yaml` and `customizations/` from `federation-A`.
+2. Set `namePrefix` in `kustomization.yaml` to the federation name, and adjust the values in `customizations/`.
+3. Commit and push to the branch the ApplicationSet follows. The `mip-infrastructure` ApplicationSet creates the federation's Application. The `argo-projects` ApplicationSet creates its AppProject `mip-argo-project-federation-<name>`.
+4. Create the federation's Secrets ([getting-started.md, step 6](getting-started.md#6-create-the-secrets)).
+5. Notebooks need nothing more. Within five minutes the CronJob `mip-notebook-rbac-manager` binds the notebook operator and JupyterHub in the new namespace. Check: `kubectl -n federation-<name> get rolebinding mip-notebook-operator mip-jupyterhub`.
 
 ### Hybrid federation (controller here, workers on remote nodes)
 
-1. Create `deployments/hybrid/federations/<federation>/mip-infrastructure/` from `federation-Z`: the kustomization, the `customizations/`, `network-policies.yaml` and `submariner-policies/` (worker DNS entries, one `ipBlock` per remote node, ServiceExports).
-2. Copy `deployments/hybrid/federations/<federation>/remote-node/` as the procedure handed to each remote site.
-3. Commit and push. Both ApplicationSets discover `deployments/hybrid/federations/*/mip-infrastructure`.
-4. Provision the per-federation secrets as for a local federation.
-5. Join each remote node — see [hybrid-federations.md](hybrid-federations.md).
-6. Notebook RBAC follows the namespace label as for a local federation (step 7 above).
+1. Create `deployments/hybrid/federations/<federation>/mip-infrastructure/` from `federation-Z`: `kustomization.yaml`, `customizations/`, `network-policies.yaml`, `submariner-policies/` (worker DNS names, one `ipBlock` per remote pod CIDR, the ServiceExport) and `remote-networks.yaml` (pod and service CIDR of each remote node).
+2. Copy `remote-node/` and `enrollment/` for the new federation. The sites follow its runbook.
+3. Commit and push. The ApplicationSets find `deployments/hybrid/federations/*/mip-infrastructure`, and `federation-remote-networks` reads its `remote-networks.yaml`.
+4. Create the federation's Secrets, as for a local federation.
+5. Join each remote node ([hybrid-federations.md](hybrid-federations.md#add-a-remote-node)).
+6. Notebooks work as for a local federation.
 
-## Switching the hub to the notebook API proxy
+## Add a remote node to a hybrid federation
 
-The proxy (`common/notebook-operator/manifests/api-proxy.yaml`) is deployed and verified
-before any hub uses it; the hub side needs the `madgik/mip` chart value
-`jupyterhub.apiProxy` (see
-[how-to-implement-the-notebook-properly.md](../how-to-implement-the-notebook-properly.md)).
+See [hybrid-federations.md](hybrid-federations.md#add-a-remote-node) and the runbook `deployments/hybrid/federations/<federation>/remote-node/README.md`.
 
-1. Check the proxy: `kubectl -n mip-notebooks-system get deploy notebook-api-proxy certificate notebook-api-proxy`
-   and `kubectl -n federation-<x> get configmap notebook-api-proxy-ca`.
-2. Set `jupyterhub.apiProxy.enabled: true` in `deployments/shared-apps/mip-stack/values.yaml`;
-   sync; spawn a notebook.
-3. Set `apiServer.hubDirect: false` in `common/security/federation/values.yaml`; sync; spawn
-   again. The hub can no longer reach the API server directly.
+## Switch the hub to the notebook API proxy
 
-## Adding a remote node to a hybrid federation
+The proxy (`common/notebook-operator/manifests/api-proxy.yaml`) runs before any hub uses it. The hub side needs the `madgik/mip` chart value `jupyterhub.apiProxy`.
 
-See [hybrid-federations.md](hybrid-federations.md#adding-a-remote-node) and the step-by-step runbook in `deployments/hybrid/federations/<federation>/remote-node/README.md`.
+1. Check the proxy: `kubectl -n mip-notebooks-system get deploy notebook-api-proxy certificate notebook-api-proxy` and `kubectl -n federation-<x> get configmap notebook-api-proxy-ca`.
+2. Set `jupyterhub.apiProxy.enabled: true` in `deployments/shared-apps/mip-stack/values.yaml`, sync, and spawn a notebook.
+3. Set `apiServer.hubDirect: false` in `common/security/federation/values.yaml`, sync, and spawn again. The hub can no longer reach the API server directly.
 
-## Customising applications per federation
+## Change the values of one federation
 
-Each federation patches the shared app templates from `deployments/shared-apps/`. To override values:
+Each federation patches the shared applications of `deployments/shared-apps/`:
 
-1. Edit `deployments/local/federations/<fed>/customizations/<app>-values.yaml`.
-2. If you need structural overrides, modify the matching kustomize patch(e.g. `exareme2-kustomize.yaml`).
+1. Edit `deployments/local/federations/<federation>/customizations/<app>-values.yaml`.
+2. For structural changes, edit the matching Kustomize patch, such as `exareme2-kustomize.yaml`.
 
-Argo CD detects the change on the next sync.
+Argo CD applies the change at the next sync.
 
-## Adding a shared application
+## Add a shared application
 
-To make a new application available to every federation:
+1. Add it under `deployments/shared-apps/<app>/`: manifests, or a Helm chart with values.
+2. Reference it from the `kustomization.yaml` of each federation that needs it.
+3. Check that the AppProject allows the resource kinds it uses: [`projects/static/`](../projects/static/) and [`projects/templates/federation/`](../projects/templates/federation/).
 
-1. Add the app under `deployments/shared-apps/<my-app>/` (manifests or Helm chart + values).
-2. Reference it from each federation's `kustomization.yaml` that should pull it in.
-3. Verify the destination AppProject permits the resource kinds your app needs by reviewing the relevant manifests under [`../projects/static/`](../projects/static/) or [`../projects/templates/federation/`](../projects/templates/federation/).
-
-## Bumping Argo CD
+## Update Argo CD
 
 See [argo-setup/README.md](../argo-setup/README.md#bumping-argo-cd).
 
-## Dependency updates (Renovate + Dependabot)
+## Dependency updates
 
-Two bots keep dependencies current, split by ecosystem. Nothing is automerged — every PR needs human review.
+Two bots open pull requests. Nothing merges without review.
 
-### Renovate — everything except GitHub Actions
+**Renovate** ([`renovate.json5`](../renovate.json5)) covers everything except GitHub Actions. Its Dependency Dashboard issue lists every tracked dependency.
 
-The [Mend Renovate GitHub App](https://github.com/apps/renovate) opens PRs on its recurring schedule (roughly hourly), configured in [`renovate.json5`](../renovate.json5) at the repo root. The Dependency Dashboard issue on GitHub lists every tracked dependency and pending update.
+- External charts (exareme2, mip-stack, datacatalog): the `targetRevision` commit and its `# <version>` comment move together. The shared-apps baselines and the overrides under `deployments/hybrid/federations/**` get separate pull requests; the exareme2 chart and `exaflow_images.version` move in one.
+- Argo CD (`argo-setup/patches/kustomization.yaml`): the pull request runs the ClusterRole drift check and the kind smoke test. Follow [argo-setup/README.md](../argo-setup/README.md#bumping-argo-cd) before you merge.
+- The Submariner charts, the ECK stack (annotated keys in `common/monitoring/eck/values.yaml`, one pull request) and the HAProxy ingress image.
+- The yq and kustomize binaries of CI: version and SHA-256 together.
+- The images of the Submariner gateway-node DaemonSets (`common/submariner/operator/gateway-*.yaml`). `alpine/kubectl` gets patch and digest updates only: the watchdog's kubectl must stay within one minor version of the central API server, so change its minor by hand, together with the cluster.
 
-- **External app charts** (exareme2, mip-stack, datacatalog): bumps the `targetRevision` commit SHA and its `# <version>` comment together, resolved from the upstream repo's tags. The shared-apps baselines and the per-federation overrides under `deployments/hybrid/federations/**` get separate PRs; the exareme2 chart SHA and `exaflow_images.version` move in one PR.
-- **Argo CD upstream** (`argo-setup/patches/kustomization.yaml`): bump PRs automatically trigger the ClusterRole drift check and the kind smoke test — follow [argo-setup/README.md](../argo-setup/README.md#bumping-argo-cd) before merging.
-- **Submariner charts**, the **ECK/Elastic stack** (annotated `version:`/`tag:` keys in `common/monitoring/eck/values.yaml`, grouped into one PR), and the **HAProxy ingress controller image**.
-- **yq/kustomize CI binaries**: version and SHA256 checksum are bumped together (checksum resolved from the GitHub release assets).
-
-Deliberately ignored: `bitnami/kubectl` in the submariner copy-secret hook (the hook is scheduled for removal).
-
-### Dependabot — GitHub Actions only
-
-[`.github/dependabot.yml`](../.github/dependabot.yml) updates action versions **monthly**, grouped into a single PR, keeping the SHA-pinned-with-`# vX.Y.Z`-comment style. Renovate's github-actions manager is disabled so the two bots never open duplicate PRs.
+**Dependabot** ([`.github/dependabot.yml`](../.github/dependabot.yml)) updates the GitHub Actions once a month, in one pull request, pinned by SHA with a `# vX.Y.Z` comment. Renovate's GitHub Actions manager is off, so the bots never open the same update.

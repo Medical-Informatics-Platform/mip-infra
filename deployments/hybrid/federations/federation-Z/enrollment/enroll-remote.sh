@@ -6,7 +6,8 @@
 #   ServiceAccount cluster-<id>
 #   RoleBinding    cluster-<id>-submariner-remote-cluster        -> Role submariner-remote-cluster
 #   RoleBinding    cluster-<id>-submariner-remote-cluster-secret-syncer (only with BROKER_SECRET_SYNCER=true)
-#   ConfigMap      cluster-<id> (label submariner.io/remote-enrollment=true, data.subnets when SUBNETS is set)
+#   ConfigMap      cluster-<id> (label submariner.io/remote-enrollment=true; data.exports, and data.subnets
+#                  when SUBNETS is set): the enrollment record read by the subnet and export policies
 # and writes into OUT_DIR (mode 0700, files 0600):
 #   cluster-id.txt         the cluster ID (name suffix of the account)
 #   broker-token.txt       bound service-account token, plain text (kubectl create token)
@@ -15,11 +16,16 @@
 #   broker-psk.txt         .data.psk of secret submariner-ipsec-psk (submariner-operator), base64 as stored
 #   broker-url.txt         API server URL the remote must use (BROKER_URL or the kubeconfig server)
 #   subnets.txt            the SUBNETS value, read by verify-enrollment.sh to test the subnet pinning
+#   exports.txt            the EXPORTS value, read by verify-enrollment.sh to test the export pinning
 #   token-expiry.txt       expiry of the issued token (UTC)
 #
 # Parameters (environment variables or key=value arguments):
 #   CLUSTER_ID           default rn-<8 hex>; re-use the recorded ID to re-enroll or rotate a node
 #   SUBNETS              comma-separated CIDRs the node may announce (pod and service CIDR); empty = no pinning
+#   EXPORTS              comma-separated <namespace>/<service> entries the node may publish to the clusterset.
+#                        Default: the worker export of this federation, read from
+#                        ../remote-node/exaflow-worker/serviceexport.yaml. Empty (EXPORTS=) = the node may
+#                        publish nothing. Everything else is refused by the broker.
 #   TOKEN_DURATION       default 8760h (the API server may cap it: --service-account-max-token-expiration)
 #   OUT_DIR              default ./enroll-<CLUSTER_ID>
 #   BROKER_URL           API server URL reachable from the remote site (default: current kubeconfig server)
@@ -27,12 +33,13 @@
 #   OPERATOR_NS          default submariner-operator
 #   PSK_SECRET           default submariner-ipsec-psk
 #   BROKER_SECRET_SYNCER default false; true also binds Role submariner-remote-cluster-secret-syncer
-#                        (required if the remote's Submariner resource sets brokerK8sSecret; see NOTES.md)
+#                        (required if the remote's Submariner resource sets brokerK8sSecret)
 #   ROTATE_IDENTITY      default false; true deletes and recreates the ServiceAccount first, which invalidates
 #                        every token issued to it so far (a re-run without it only adds a token)
 #
 # Re-runs keep the account and issue a fresh token. Previously issued tokens stay valid until they expire
-# unless ROTATE_IDENTITY=true is used (or revoke-remote.sh deletes the account).
+# unless ROTATE_IDENTITY=true is used (or revoke-remote.sh deletes the account). A re-run also rewrites the
+# enrollment record: pass the SUBNETS and EXPORTS of the first run again; the script warns when they differ.
 set -euo pipefail
 
 log() { printf '==> %s\n' "$*"; }
@@ -42,7 +49,7 @@ die() { printf 'ERROR: %s\n' "$*" >&2; exit 1; }
 for arg in "$@"; do
   case "$arg" in
     *=*) export "${arg?}" ;;
-    -h|--help) sed -n '2,40p' "$0"; exit 0 ;;
+    -h|--help) sed -n '2,42p' "$0"; exit 0 ;;
     *) die "unknown argument '${arg}' (use KEY=value)" ;;
   esac
 done
@@ -58,6 +65,14 @@ ROLE=submariner-remote-cluster
 SYNCER_ROLE=submariner-remote-cluster-secret-syncer
 TOKEN_DURATION="${TOKEN_DURATION:-8760h}"
 SUBNETS="${SUBNETS:-}"
+# The export a node of this federation needs is the one its runbook manifests create.
+here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+worker_export="${here}/../remote-node/exaflow-worker/serviceexport.yaml"
+default_exports=""
+if [[ -f "$worker_export" ]]; then
+  default_exports="$(awk '$1 == "name:" {n = $2} $1 == "namespace:" {ns = $2} END {if (n != "" && ns != "") print ns "/" n}' "$worker_export")"
+fi
+EXPORTS="$(tr -d '[:space:]' <<<"${EXPORTS-$default_exports}")"
 BROKER_SECRET_SYNCER="${BROKER_SECRET_SYNCER:-false}"
 ROTATE_IDENTITY="${ROTATE_IDENTITY:-false}"
 CLUSTER_ID="${CLUSTER_ID:-rn-$(openssl rand -hex 4)}"
@@ -77,6 +92,16 @@ if [[ -n "$SUBNETS" ]]; then
       || die "SUBNETS entry '${s}' is not a CIDR"
   done
 fi
+if [[ -n "$EXPORTS" ]]; then
+  IFS=',' read -r -a export_list <<<"$EXPORTS"
+  for e in "${export_list[@]}"; do
+    [[ "$e" =~ ^[a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?/[a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?$ ]] \
+      || die "EXPORTS entry '${e}' is not <namespace>/<service>"
+  done
+else
+  warn "no export recorded: the broker will refuse every service this node publishes, its worker included." \
+    "Pass EXPORTS=<namespace>/<service> unless that is intended."
+fi
 
 # --- preconditions on the central cluster ----------------------------------------------------------------
 kubectl get namespace "$BROKER_NS" >/dev/null 2>&1 || die "namespace ${BROKER_NS} not found in the current context"
@@ -90,8 +115,16 @@ if ! kubectl get validatingadmissionpolicy submariner-remote-cluster-ownership >
   warn "ValidatingAdmissionPolicy submariner-remote-cluster-ownership is not installed; the account would" \
     "be able to touch other clusters' broker objects. Apply submariner-remote-admission.yaml."
 fi
+if ! kubectl get validatingadmissionpolicy submariner-remote-cluster-exports >/dev/null 2>&1; then
+  warn "ValidatingAdmissionPolicy submariner-remote-cluster-exports is not installed; the account would" \
+    "be able to publish any service in any namespace. Apply submariner-remote-admission.yaml."
+fi
+if ! kubectl get validatingadmissionpolicy submariner-remote-cluster-records >/dev/null 2>&1; then
+  warn "ValidatingAdmissionPolicy submariner-remote-cluster-records is not installed; service accounts" \
+    "could rewrite the enrollment record. Apply submariner-remote-admission.yaml."
+fi
 kubectl -n "$OPERATOR_NS" get secret "$PSK_SECRET" >/dev/null 2>&1 \
-  || die "secret ${PSK_SECRET} not found in ${OPERATOR_NS} (created by the broker PostSync hook)"
+  || die "secret ${PSK_SECRET} not found in ${OPERATOR_NS} (created once by hand, see common/submariner/README.md, Install, step 2)"
 
 # --- identity ---------------------------------------------------------------------------------------------
 if [[ "$ROTATE_IDENTITY" == true ]] && kubectl -n "$BROKER_NS" get serviceaccount "$SA" >/dev/null 2>&1; then
@@ -99,8 +132,22 @@ if [[ "$ROTATE_IDENTITY" == true ]] && kubectl -n "$BROKER_NS" get serviceaccoun
   kubectl -n "$BROKER_NS" delete serviceaccount "$SA"
 fi
 
-log "Ensuring ServiceAccount ${SA}, RoleBinding(s) and enrollment ConfigMap in ${BROKER_NS}"
-kubectl apply -f - <<EOF
+# A re-run rewrites the record with the values of this run.
+if recorded="$(kubectl -n "$BROKER_NS" get configmap "$SA" -o jsonpath='{.data.subnets}{"|"}{.data.exports}' 2>/dev/null)"; then
+  recorded="$(tr -d '[:space:]' <<<"$recorded")"
+  if [[ "$recorded" != "$(tr -d '[:space:]' <<<"$SUBNETS")|${EXPORTS}" ]]; then
+    warn "the record of ${SA} changes: subnets '${recorded%%|*}' -> '$(tr -d '[:space:]' <<<"$SUBNETS")'," \
+      "exports '${recorded#*|}' -> '${EXPORTS}'. Pass SUBNETS and EXPORTS as recorded to keep them."
+  fi
+fi
+
+log "Ensuring ServiceAccount ${SA}, enrollment ConfigMap and RoleBinding(s) in ${BROKER_NS}"
+# The ConfigMap is the parameter of the policies submariner-remote-cluster-subnets and
+# submariner-remote-cluster-exports. It is written before the RoleBinding: an account that can write to the
+# broker without a record would not be restricted by the export policy. Without SUBNETS no subnet is pinned;
+# an empty exports entry allows no export.
+{
+  cat <<EOF
 ---
 apiVersion: v1
 kind: ServiceAccount
@@ -110,6 +157,25 @@ metadata:
   labels:
     submariner.io/remote-enrollment: "true"
 automountServiceAccountToken: false
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: ${SA}
+  namespace: ${BROKER_NS}
+  labels:
+    submariner.io/remote-enrollment: "true"
+  annotations:
+    submariner.io/enrolled-at: "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+data:
+  exports: "${EXPORTS}"
+EOF
+  if [[ -n "$SUBNETS" ]]; then
+    printf '  subnets: "%s"\n' "$(tr -d '[:space:]' <<<"$SUBNETS")"
+  fi
+} | kubectl apply -f -
+
+kubectl apply -f - <<EOF
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding
@@ -150,26 +216,6 @@ EOF
 else
   kubectl -n "$BROKER_NS" delete rolebinding "${SA}-${SYNCER_ROLE}" --ignore-not-found >/dev/null
 fi
-
-# The ConfigMap is the parameter of policy submariner-remote-cluster-subnets. Without SUBNETS it carries no
-# data and pins nothing, but still documents the enrollment.
-{
-  cat <<EOF
----
-apiVersion: v1
-kind: ConfigMap
-metadata:
-  name: ${SA}
-  namespace: ${BROKER_NS}
-  labels:
-    submariner.io/remote-enrollment: "true"
-  annotations:
-    submariner.io/enrolled-at: "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-EOF
-  if [[ -n "$SUBNETS" ]]; then
-    printf 'data:\n  subnets: "%s"\n' "$(tr -d '[:space:]' <<<"$SUBNETS")"
-  fi
-} | kubectl apply -f -
 
 # --- credentials ------------------------------------------------------------------------------------------
 umask 077
@@ -232,6 +278,7 @@ printf '%s\n' "$psk_b64" >"${OUT_DIR}/broker-psk.txt"
 broker_url="${BROKER_URL:-$(kubectl config view --raw --minify -o jsonpath='{.clusters[0].cluster.server}')}"
 printf '%s\n' "$broker_url" >"${OUT_DIR}/broker-url.txt"
 printf '%s\n' "$(tr -d '[:space:]' <<<"$SUBNETS")" >"${OUT_DIR}/subnets.txt"
+printf '%s\n' "$EXPORTS" >"${OUT_DIR}/exports.txt"
 context_proxy="$(kubectl config view --minify -o jsonpath='{.clusters[0].cluster.proxy-url}' 2>/dev/null || true)"
 if [[ -n "$context_proxy" || -n "${HTTPS_PROXY:-}${https_proxy:-}" ]]; then
   warn "this machine reaches the API server through a proxy (${context_proxy:-${HTTPS_PROXY:-${https_proxy:-}}});" \
@@ -250,9 +297,10 @@ Enrolled cluster ID : ${CLUSTER_ID}
 Account             : system:serviceaccount:${BROKER_NS}:${SA}
 Roles               : ${ROLE}$( [[ "$BROKER_SECRET_SYNCER" == true ]] && printf ', %s' "$SYNCER_ROLE" )
 Pinned subnets      : ${SUBNETS:-none}
+Allowed exports     : ${EXPORTS:-none}
 Token expires       : ${expiry}
 Broker URL          : ${broker_url}
-Files (mode 0600)   : ${OUT_DIR}/{cluster-id.txt,broker-token.txt,broker-ca.crt,broker-ca-base64.txt,broker-psk.txt,broker-url.txt,subnets.txt}
+Files (mode 0600)   : ${OUT_DIR}/{cluster-id.txt,broker-token.txt,broker-ca.crt,broker-ca-base64.txt,broker-psk.txt,broker-url.txt,subnets.txt,exports.txt}
 
 Record the cluster ID and the token expiry with the site in the internal tracking system.
 Hand the files to the site over the agreed channel; they are credentials. Verify before shipping:

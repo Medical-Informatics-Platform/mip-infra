@@ -1,11 +1,11 @@
 ---
 # rbac-lint: ignore
-# Submariner ships namespaced Role/RoleBinding for the broker and operator
-# (see common/submariner/{broker,operator}/kustomization.yaml). Those RBAC
-# resources are scoped to the submariner-k8s-broker and submariner-operator
-# namespaces only, so this project legitimately needs Role/RoleBinding in
-# its namespaceResourceWhitelist and the global blacklist drift-check is
-# explicitly opted out for this file.
+# The operator chart ships namespaced Role/RoleBinding, scoped to
+# submariner-operator (common/submariner/operator/kustomization.yaml). This
+# project therefore needs Role/RoleBinding in its namespaceResourceWhitelist,
+# and this file opts out of the global blacklist drift check. The broker
+# namespace is not a destination: its RBAC is out of band
+# (base/mip-infrastructure/rbac/submariner-rbac.yaml).
 apiVersion: argoproj.io/v1alpha1
 kind: AppProject
 metadata:
@@ -18,8 +18,6 @@ spec:
     - https://github.com/Medical-Informatics-Platform/mip-infra.git
     - https://submariner-io.github.io/submariner-charts/charts
   destinations:
-    - namespace: submariner-k8s-broker
-      server: https://kubernetes.default.svc
     - namespace: submariner-operator
       server: https://kubernetes.default.svc
   clusterResourceWhitelist:
@@ -40,8 +38,6 @@ spec:
       kind: Deployment
     - group: apps
       kind: DaemonSet
-    - group: batch
-      kind: Job
     - group: ''
       kind: ServiceAccount
     - group: ''

@@ -1,0 +1,185 @@
+---
+# Restarts the route agent when the active gateway's health checks fail. The route agent installs the
+# rule "from all lookup 150" and the table-150 routes on the gateway node once and does not re-add
+# them. Without them the gateway's health-check pings fail: its connections show "error" while the
+# tunnels stay up. The networkd drop-in (gateway-node-networkd.yaml) prevents one cause; this
+# DaemonSet recovers from the others.
+#
+# Every minute the pod reads the Gateway object of its node. When the gateway is active and a
+# connection is in "error" in two checks in a row, it deletes the route agent pod on its node; the new
+# pod re-installs the rule and the routes. A tunnel that is down shows "connecting" and is left alone.
+# Restarts are at least 15 minutes apart. When a restart does not clear the errors, the interval
+# doubles, up to 4 hours; it resets once no connection is in error.
+# Log: kubectl -n submariner-operator logs ds/submariner-gateway-route-watchdog
+#
+# Security: no host network, so Calico policy and the remote-clusters tier apply to the pod. It opens
+# no port. Non-root, no privilege escalation, no capabilities, read-only root filesystem,
+# RuntimeDefault seccomp, no service links, one-hour projected token. Role and admission policy in
+# base/mip-infrastructure/rbac/submariner-rbac.yaml: read the Gateway objects, delete the route agent
+# pod on its own node, nothing else.
+#
+# Image: alpine/kubectl (kubectl and busybox sh). Pinned by index digest to the newest tag within
+# kubectl's version skew of the central API server (1.35). Update the tag and digest together.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: submariner-gateway-route-watchdog
+  namespace: submariner-operator
+automountServiceAccountToken: false
+---
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: submariner-gateway-route-watchdog
+  namespace: submariner-operator
+  labels:
+    app: submariner-gateway-route-watchdog
+spec:
+  selector:
+    matchLabels:
+      app: submariner-gateway-route-watchdog
+  updateStrategy:
+    type: RollingUpdate
+  template:
+    metadata:
+      labels:
+        app: submariner-gateway-route-watchdog
+    spec:
+      serviceAccountName: submariner-gateway-route-watchdog
+      automountServiceAccountToken: false
+      enableServiceLinks: false
+      # On the gateway node: the admission policy lets the pod delete pods on its own node only.
+      nodeSelector:
+        submariner.io/gateway: 'true'
+      tolerations:
+        - operator: Exists
+      terminationGracePeriodSeconds: 5
+      securityContext:
+        runAsUser: 65534
+        runAsGroup: 65534
+        runAsNonRoot: true
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: watchdog
+          image: docker.io/alpine/kubectl:1.36.4@sha256:a2cd8ee034cbe04d651e565b3373299b31921de5c2af86490559e21b3e197808
+          env:
+            - name: NODE_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: spec.nodeName
+            - name: HOME
+              value: /tmp
+          command:
+            - /bin/sh
+            - -c
+            - |
+              set -u
+              ns=submariner-operator
+              interval=60  # seconds between checks
+              needed=2  # checks in a row with an error before a restart
+              base=900  # minimum seconds between restarts
+              max=14400  # upper limit of the interval while restarts do not help
+              cooldown=$base
+              bad=0
+              last=0
+              restarted=0  # 1 from a restart until a check without errors
+              noted=0  # "did not help" logged for the last restart
+              api_ok=1
+              err=/tmp/kubectl.err
+              pods="/api/v1/namespaces/${ns}/pods?labelSelector=app%3Dsubmariner-routeagent"
+              pods="${pods}&fieldSelector=spec.nodeName%3D${NODE_NAME}"
+              log() { echo "$(date -u +%Y-%m-%dT%H:%M:%SZ) $*"; }
+              trap 'exit 0' TERM INT
+              log "watching the Gateway object of ${NODE_NAME}"
+              while :; do
+                # First line: HA status. Then one line per connection: its status.
+                if state="$(kubectl -n "$ns" get gateways.submariner.io "$NODE_NAME" \
+                  -o jsonpath='{.status.haStatus}{"\n"}{range .status.connections[*]}{.status}{"\n"}{end}' \
+                  2>"$err")"; then
+                  [ "$api_ok" = 1 ] || log "Gateway object readable again"
+                  api_ok=1
+                else
+                  [ "$api_ok" = 0 ] || log "cannot read the Gateway object: $(head -n 1 "$err")"
+                  api_ok=0
+                  state=""
+                fi
+                ha="$(printf '%s\n' "$state" | head -n 1)"
+                errors="$(printf '%s\n' "$state" | tail -n +2 | grep -cx error)"
+                if [ "$api_ok" = 0 ] || [ "$ha" != active ]; then
+                  bad=0
+                elif [ "$errors" -eq 0 ]; then
+                  if [ "$bad" -gt 0 ] || [ "$restarted" = 1 ]; then
+                    log "no connection in error"
+                  fi
+                  bad=0
+                  restarted=0
+                  noted=0
+                  cooldown=$base
+                else
+                  if [ "$bad" -lt "$needed" ]; then
+                    bad=$((bad + 1))
+                    log "connections in error: ${errors} (check ${bad}/${needed})"
+                  fi
+                  if [ "$bad" -ge "$needed" ]; then
+                    if [ "$restarted" = 1 ] && [ "$noted" = 0 ]; then
+                      cooldown=$((cooldown * 2))
+                      [ "$cooldown" -le "$max" ] || cooldown=$max
+                      log "restart did not help; next restart after $((cooldown / 60)) minutes"
+                      noted=1
+                    fi
+                    now="$(date +%s)"
+                    if [ $((now - last)) -ge "$cooldown" ]; then
+                      # One deletecollection request; the answer holds pod specs and is not printed.
+                      if kubectl delete --raw "$pods" >/dev/null 2>"$err"; then
+                        log "restarted the route agent on ${NODE_NAME}"
+                        last="$now"
+                        restarted=1
+                        noted=0
+                      else
+                        log "route agent restart failed: $(head -n 1 "$err")"
+                      fi
+                      bad=0
+                    fi
+                  fi
+                fi
+                sleep "$interval" & wait $!
+              done
+          securityContext:
+            readOnlyRootFilesystem: true
+            allowPrivilegeEscalation: false
+            privileged: false
+            capabilities:
+              drop: [ALL]
+          resources:
+            requests:
+              cpu: 5m
+              memory: 32Mi
+            limits:
+              memory: 128Mi
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+            - name: api-token
+              mountPath: /var/run/secrets/kubernetes.io/serviceaccount
+              readOnly: true
+      volumes:
+        - name: tmp
+          emptyDir:
+            sizeLimit: 16Mi
+        - name: api-token
+          projected:
+            sources:
+              - serviceAccountToken:
+                  path: token
+                  expirationSeconds: 3600
+              - configMap:
+                  name: kube-root-ca.crt
+                  items:
+                    - key: ca.crt
+                      path: ca.crt
+              - downwardAPI:
+                  items:
+                    - path: namespace
+                      fieldRef:
+                        fieldPath: metadata.namespace

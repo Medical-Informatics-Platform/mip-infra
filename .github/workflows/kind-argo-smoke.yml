@@ -8,7 +8,9 @@ on:
       - base/argo-projects/argo-projects.yaml
       - projects/static/**
       - base/mip-infrastructure/notebook-operator/**
+      - base/mip-infrastructure/rbac/submariner-*.yaml
       - common/notebook-operator/**
+      - common/submariner/operator/gateway-route-watchdog.yaml
       - scripts/kind-argo-test.sh
       - scripts/e2e/lib.sh  # sourced by kind-argo-test.sh
       - .github/workflows/kind-argo-smoke.yml

@@ -170,18 +170,31 @@ jobs:
           tar -xzf "$tarball" kustomize
           sudo install -m 0755 kustomize /usr/local/bin/kustomize
           rm -f "$tarball" kustomize
+      # scripts/check-remote-cidrs.sh reads the policies and values with yq.
+      - name: Install yq (pinned + sha256 verified)
+        env:
+          YQ_VERSION: v4.54.3
+          YQ_SHA256: 09a25baa0e136b8633949e03117fc82cb9e50d10910f988ef17a1305539ebce4
+        run: |
+          set -euo pipefail
+          tarball=yq_linux_amd64.tar.gz
+          url=https://github.com/mikefarah/yq/releases/download/${YQ_VERSION}/${tarball}
+          curl -sSfLo "$tarball" "$url"
+          echo "${YQ_SHA256}  ${tarball}" | sha256sum -c -
+          tar -xzf "$tarball" ./yq_linux_amd64
+          sudo install -m 0755 yq_linux_amd64 /usr/local/bin/yq
+          rm -f "$tarball" yq_linux_amd64
       - name: Render checks
         run: |
           set -euo pipefail
           # Submariner: a live e2e needs a second cluster and an IPsec mesh —
           # meaningless on kind. Building with --enable-helm still verifies
-          # the Renovate-bumped chart versions exist upstream and template
-          # cleanly against our values.
-          kustomize build --enable-helm common/submariner/broker >/tmp/broker.yaml
-          test -s /tmp/broker.yaml
+          # the Renovate-bumped chart version exists upstream and templates
+          # cleanly against our values. There is no broker chart: the broker
+          # is a namespace and its out-of-band RBAC.
           kustomize build --enable-helm common/submariner/operator >/tmp/operator.yaml
           test -s /tmp/operator.yaml
-          echo "OK: submariner broker + operator render"
+          echo "OK: submariner operator renders"
           # Hybrid federation overrides deploy on a cluster CI cannot reach;
           # at least prove the composition still builds.
           kustomize build deployments/hybrid/federations/federation-Z/mip-infrastructure >/dev/null
@@ -191,8 +204,10 @@ jobs:
           kustomize build deployments/hybrid/federations/federation-Z/remote-node/exaflow-worker >/dev/null
           echo "OK: federation-Z remote worker renders"
           kustomize build common/security/remote-clusters >/dev/null
+          helm template netpol-remote common/security/remote-networks --set targetNamespace=federation-z \
+            -f deployments/hybrid/federations/federation-Z/mip-infrastructure/remote-networks.yaml >/dev/null
           bash scripts/check-remote-cidrs.sh
-          echo "OK: remote-cluster containment renders and CIDRs are consistent"
+          echo "OK: remote-cluster tier and federation policy render, remote networks are consistent"
           # Network-policy charts: render for both federation types and for every
           # common namespace of the list generator; the API server pins must be
           # the same in both charts (the cidrs items under apiServer:).

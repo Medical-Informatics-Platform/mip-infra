@@ -1,140 +1,105 @@
-# MIP Submariner Deployment
+# Submariner (central cluster)
 
-Deploys Submariner for multi-cluster connectivity in MIP infrastructure using official Submariner Helm charts.
+This directory deploys the Submariner operator on the central cluster. Submariner connects the central cluster to the remote nodes of hybrid federations. The central cluster also hosts the broker: the namespace `submariner-k8s-broker`, where the clusters publish their endpoints and exports.
 
-## Overview
+- Design: [docs/hybrid-federations.md](../../docs/hybrid-federations.md)
+- Remote nodes: [remote-node runbook](../../deployments/hybrid/federations/federation-Z/remote-node/README.md)
 
-This deployment uses:
-- Official `submariner-k8s-broker` Helm chart for broker components
-- Official `submariner-operator` Helm chart for cluster connectivity
-- Custom values files for environment-specific configuration
-- Kustomize for additional customization when needed
+| Path | Content |
+| --- | --- |
+| `submariner.yaml` | Argo CD Application `submariner-operator` |
+| `operator/` | The operator chart (rendered by Kustomize with `values.yaml`), the operator's broker account, the gateway-node DaemonSets |
+| `base/mip-infrastructure/rbac/submariner-rbac.yaml` | Namespaces and RBAC, applied by hand: the Argo CD project may not create them |
 
-The central cluster hosts the broker and its own operator (this directory). Remote nodes join with the same operator chart, installed by Helm from `deployments/hybrid/federations/federation-Z/remote-node/`. Design notes: [docs/hybrid-federations.md](../../docs/hybrid-federations.md).
+There is no broker chart. The operator installs the broker CRDs itself.
 
 ## Prerequisites
 
-- Kubernetes (both clusters)
-- Helm (on nodes where deploying manually)
-- Calico CNI with VXLAN encapsulation and the Calico API server (`projectcalico.org/v3`), which the route agent uses to create IP pools
-- Non-overlapping pod and service CIDRs across all clusters
-- LoadBalancer service support (or MetalLB) for the broker cluster gateway
-- Argo CD installed on the broker cluster
-- Network: TCP 6443 from every remote cluster to the broker API server; UDP 4500 (IPsec NAT-T) and UDP 4490 (NAT discovery) to the central gateway address; UDP 4800 between nodes of the same cluster when a cluster has more than one node
-- `subctl` matching the deployed Submariner version, for `show`, `diagnose` and `uninstall`
+- Calico with VXLAN and the Calico API server (`projectcalico.org/v3`). The route agent creates IP pools through it.
+- Pod and service CIDRs that no other cluster of the clusterset uses.
+- MetalLB, or another LoadBalancer, for the gateway address.
+- Network: TCP 6443 from every remote node to the API server, and UDP 4500 and 4490 to the gateway address. UDP 4800 between the nodes of a cluster that has several nodes.
+- `subctl` at the deployed version, for `show`, `diagnose` and `uninstall`.
 
-## Manual Installation guide for testing (we use argocd normally)
+## Install
 
-### 1. Deploy Broker and Operator (Public Cluster via Argo CD)
+1. Apply the out-of-band RBAC: `kubectl apply -f base/mip-infrastructure/rbac/submariner-rbac.yaml` (see [getting started](../../docs/getting-started.md), step 3).
+2. Create the IPsec PSK once, in `submariner-operator` only. All clusters of the clusterset share it, and it is never stored in git:
 
-```bash
-# Apply the Argo CD Applications
-kubectl apply -f submariner.yaml
+   ```bash
+   kubectl -n submariner-operator create secret generic submariner-ipsec-psk \
+     --from-literal=psk="$(openssl rand -base64 64 | tr -d '\n')"
+   ```
 
-# Sync the applications
-argocd app sync submariner-broker
-argocd app sync submariner-operator
-```
+   Replacing the PSK re-keys the clusterset: every remote node must then be enrolled and joined again.
+3. Let Argo CD sync the Application `submariner-operator` (by hand: `argocd app sync submariner-operator`).
 
-The out-of-band RBAC in `base/mip-infrastructure/rbac/submariner-rbac.yaml` must exist beforehand (see `docs/getting-started.md`, step 3). The PostSync hook `broker/copy-secret-hook.yaml` then copies the broker client token and CA into `submariner-operator` and generates the IPsec PSK (`submariner-ipsec-psk`) once, in `submariner-operator` only. The client Role can read secrets in the broker namespace (the operator's broker secret syncer requires it), so nothing sensitive besides that account's own token may be stored there; the PSK is kept in `submariner-operator`. Remote clusters do not receive this token; each gets its own `cluster-<id>` account with a narrower Role (see `docs/hybrid-federations.md`).
+The operator reaches the broker with its own account, `submariner-operator/submariner-broker-client` (`operator/broker-credentials.yaml`). Kubernetes writes the account's token and the cluster CA into the Secret `submariner-broker-client-token`, and `submariner.brokerK8sSecret` points to it. The token does not expire. To rotate it, delete the Secret: Argo CD recreates it and Kubernetes issues a new token.
 
-### 2. Get Broker Info
-
-The broker chart creates the service account `submariner-broker-submariner-k8s-broker-client` and its token secret. Remote clusters use that token, the broker CA and the shared PSK:
-
-```bash
-umask 077
-S=submariner-broker-submariner-k8s-broker-client-token
-kubectl -n submariner-k8s-broker get secret "$S" -o jsonpath='{.data.token}' | base64 -d > broker-token.txt   # decoded
-kubectl -n submariner-k8s-broker get secret "$S" -o jsonpath='{.data.ca\.crt}' > broker-ca-base64.txt         # base64 as stored
-kubectl -n submariner-operator get secret submariner-ipsec-psk -o jsonpath='{.data.psk}' > broker-psk.txt     # base64 as stored
-```
-
-The CA and the PSK are passed to the operator chart encoded, the token decoded; the reasons are explained in `docs/hybrid-federations.md` ("Credentials and encodings"). Credentials are never written into tracked files.
-
-### 3. Deploy to Remote Cluster
-
-See [deployments/hybrid/federations/federation-Z/remote-node/README.md](../../deployments/hybrid/federations/federation-Z/remote-node/README.md).
-
-## Delete behavior
-
-The child Argo CD Applications in [common/submariner/submariner.yaml](submariner.yaml)
-intentionally do not use `resources-finalizer.argocd.argoproj.io`.
-
-Why:
-- The `submariner-operator` Application manages both the operator Deployment and a live `Submariner` custom resource.
-- A cascading Application delete tears down the controller and the controller-owned custom resource in the same operation.
-- In practice, that can deadlock deletion: the `Submariner` resource is left waiting on its own cleanup finalizers after the operator is already being removed.
-
-Consequence:
-- Deleting the child Application removes the Argo CD Application object only.
-- The deployed Submariner resources stay in the cluster.
-- The parent App-of-Apps can recreate the child Application cleanly.
-
-For a real uninstall, do it in controller order:
-- delete the `Submariner` custom resource first and wait for its cleanup to complete
-- then remove the operator workload
-- then remove the broker workload if needed
+The account's Role may read Secrets in the broker namespace, so keep no Secret there. Remote nodes never get this token; each has its own `cluster-<id>` account.
 
 ## Configuration
 
-### Key Values
+`operator/values.yaml`:
 
-Operator values are in `operator/values.yaml`, broker values in `broker/values.yaml`:
+- `submariner.clusterId`: this cluster's ID in the clusterset.
+- `submariner.clusterCidr`: the pod CIDR. `submariner.serviceCidr` stays empty; the operator finds it.
+- `submariner.brokerK8sSecret` and `ipsec.pskSecret`: the Secrets with the broker credentials and the PSK. The operator mounts them as files. Leave `broker.token`, `broker.ca` and `ipsec.psk` empty.
+- Globalnet is off: the CIDRs of all clusters differ.
 
-- `submariner.clusterId`: unique identifier of this cluster in the clusterset
-- `submariner.clusterCidr`: pod network CIDR
-- `submariner.serviceCidr`: service network CIDR (empty lets the operator discover it)
-- `submariner.natEnabled`, `submariner.loadBalancerEnabled`, `submariner.cableDriver`
-- `service.loadBalancerIP` and the MetalLB annotations for the gateway service (also patched in `patches/gateway-loadbalancer-ip.yaml`)
-- `globalnet.enabled` (broker): enable for overlapping CIDRs (false by default)
-
-The broker token and CA are not set in values; `operator/kustomization.yaml` patches the `Submariner` resource with `brokerK8sSecret: submariner-broker-secret` and `ceIPSecPSKSecret: submariner-ipsec-psk`, both created by the PostSync hook.
-
-See official chart documentation for all available options:
-- [submariner-k8s-broker chart](https://github.com/submariner-io/submariner-charts/tree/main/submariner-k8s-broker)
-- [submariner-operator chart](https://github.com/submariner-io/submariner-charts/tree/main/submariner-operator)
+Settings the chart does not offer are Kustomize patches in `operator/kustomization.yaml`, such as the gateway address below.
 
 ## Gateway node
 
-The gateway DaemonSet schedules only on a node labelled `submariner.io/gateway=true`, and MetalLB announces the gateway address from that node. The label is part of the cluster provider's node configuration, not of this repository; after a node redeploy, confirm it with `subctl show gateways` or `deployments/hybrid/federations/federation-Z/enrollment/check-central.sh`, re-apply it by hand if missing (`kubectl label node <worker> submariner.io/gateway=true`) and report it to the provider.
+The gateway runs on the node labelled `submariner.io/gateway=true`, and MetalLB announces the gateway address from it. The label belongs to the provider's node configuration. After a node redeploy, check it with `subctl show gateways` or `check-central.sh`. If it is missing, run `kubectl label node <worker> submariner.io/gateway=true` and tell the provider.
 
-`operator/gateway-node-networkd.yaml` adds the DaemonSet `submariner-gateway-node-config`, scheduled on the same label. It writes `/etc/systemd/networkd.conf.d/10-submariner-foreign-routes.conf` (`ManageForeignRoutes=no`, `ManageForeignRoutingPolicyRules=no`) on the gateway node and idles. systemd-networkd deletes routes and routing policy rules it does not own at every start, which removes the policy routing the route agent installs on the gateway node (rule `from all lookup 150`, table-150 routes to the remote CIDRs with the CNI address as source); the gateway's health-check pings then leave with the node address, every connection turns to `error` although the IPsec SAs stay up, and Lighthouse stops answering for the remote clusters. Seen on 2026-09-30 when an unattended openssl update restarted networkd through needrestart on every Ubuntu host. The pod mounts only that directory, has no network, API access or capabilities, and restarts nothing; the file takes effect at the next networkd start. It exists because the cluster nodes are not reachable over SSH. Recovery after such an event is a restart of the route agent pod on the gateway node, which re-installs the rule and routes within seconds:
+The operator owns the LoadBalancer Service `submariner-gateway` (UDP 4500 and 4490) and replaces its spec on every reconcile. The address is therefore pinned with the annotation `metallb.io/loadBalancerIPs` in `spec.loadBalancerServiceAnnotations` of the `Submariner` resource. Remote nodes exchange IPsec only with this address. It is set in three places; change them together:
+
+- `operator/kustomization.yaml`
+- `deployments/hybrid/federations/federation-Z/remote-node/central.env`
+- the `remote-nodes` group of the hardening inventory
+
+On the gateway node, the route agent installs the rule `from all lookup 150` and the table-150 routes to the remote CIDRs once. If they disappear, the gateway's health-check pings fail: every connection shows `error` while the tunnels stay up, and Lighthouse stops answering for the remote clusters. The central nodes are not reachable over SSH, so two DaemonSets on the gateway node deal with it:
+
+- `submariner-gateway-node-config` (`operator/gateway-node-networkd.yaml`) writes the networkd drop-in `/etc/systemd/networkd.conf.d/10-submariner-foreign-routes.conf` (`ManageForeignRoutes=no`, `ManageForeignRoutingPolicyRules=no`), so that a networkd restart keeps the routes. The pod mounts only that directory, has no network, API access or capabilities, and restarts nothing. The file applies at the next networkd start.
+- `submariner-gateway-route-watchdog` (`operator/gateway-route-watchdog.yaml`) repairs the other losses. Every minute it reads the Gateway object of its node. When the gateway is active and a connection is in `error` in two checks in a row, it deletes the route agent pod on that node, and the new pod re-installs the rule and the routes. Restarts are at least 15 minutes apart. While a restart does not clear the errors, the interval doubles, up to 4 hours. Log: `kubectl -n submariner-operator logs ds/submariner-gateway-route-watchdog`.
+
+The watchdog does not use the host network, so Calico policy and the remote-clusters tier apply to it. It opens no port, runs as non-root without capabilities on a read-only root filesystem, and uses a one-hour token. Its Role allows `get` on Gateway objects and `deletecollection` on pods. The admission policy `submariner-gateway-route-watchdog` limits the deletes to the route agent pod on its own node. Both are in `submariner-rbac.yaml`; apply them before the sync. The image `alpine/kubectl` is pinned by digest and must stay within kubectl's version skew of the API server; change the tag and the digest together.
+
+To repair by hand, restart the route agent on the gateway node and look at the table:
 
 ```bash
-kubectl -n submariner-operator delete pod -l app=submariner-routeagent --field-selector spec.nodeName=$(kubectl get nodes -l submariner.io/gateway=true -o jsonpath='{.items[0].metadata.name}')
+kubectl -n submariner-operator delete pod -l app=submariner-routeagent \
+  --field-selector spec.nodeName=$(kubectl get nodes -l submariner.io/gateway=true -o jsonpath='{.items[0].metadata.name}')
 kubectl -n submariner-operator exec ds/submariner-gateway -- sh -c 'ip rule show | grep 150; ip route show table 150'
 ```
 
-The operator Application syncs with `prune: false`; removing the manifest from git leaves the DaemonSet and the file in place.
+## Check
 
-## Verification
-
-`deployments/hybrid/federations/federation-Z/enrollment/check-central.sh` runs the checks below and the ones remote nodes depend on, read-only.
+`deployments/hybrid/federations/federation-Z/enrollment/check-central.sh` checks the central side and everything the remote nodes depend on. Quick looks:
 
 ```bash
-# Check broker pods
-kubectl get pods -n submariner-k8s-broker
-
-# Check operator pods
-kubectl get pods -n submariner-operator
-
-# Check connections (after a remote cluster joins)
+kubectl -n submariner-operator get pods
 subctl show connections
 subctl show gateways
-
-# Members registered on the broker
-kubectl -n submariner-k8s-broker get clusters.submariner.io,endpoints.submariner.io
+kubectl -n submariner-k8s-broker get clusters.submariner.io,endpoints.submariner.io   # registered clusters
 ```
 
-End-to-end routing and clusterset DNS are checked with the smoke test described in the remote-node README (an exported nginx Service resolved and fetched from a pod on this cluster).
+The smoke test of the remote-node runbook checks routing and clusterset DNS end to end.
 
-## Customization with Kustomize
+## Delete
 
-For settings not exposed by Helm charts, use Kustomize patches in `kustomization.yaml`.
+The Application in `submariner.yaml` has no `resources-finalizer.argocd.argoproj.io`. A cascading delete would remove the operator together with the `Submariner` resource, whose cleanup needs the operator, and the deletion would hang. Deleting the Application removes only the Application object; the parent Application can recreate it.
 
-Example: Setting a specific LoadBalancer IP (see `patches/` directory).
+To uninstall Submariner:
+
+1. Delete the `Submariner` resource and wait until its cleanup ends.
+2. Remove the operator.
+3. Remove the broker namespace, if needed.
+
+The Application syncs with `prune: false`. A manifest removed from git stays on the cluster until you delete it.
 
 ## Troubleshooting
 
-See the troubleshooting section of the remote-node README for tunnel, DNS and credential problems, and `docs/troubleshooting.md` for Argo CD-level issues such as Applications stuck on finalizers.
+- Tunnel, DNS and credential problems: the troubleshooting section of the remote-node runbook.
+- Argo CD problems, such as Applications stuck on finalizers: [docs/troubleshooting.md](../../docs/troubleshooting.md).

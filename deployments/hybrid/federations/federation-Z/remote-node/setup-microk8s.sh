@@ -1,9 +1,13 @@
 #!/usr/bin/env bash
-# Installs single-node MicroK8s with the pod and service CIDRs of this remote
-# node, installs the Calico API server that Submariner needs to manage IP
-# pools, pins Calico's node IP detection and MicroK8s' certificate handling so
-# that the Submariner tunnel interface does not disturb them, and labels the
-# node as the Submariner gateway.
+# Prepares this remote node for Submariner:
+#   - installs single-node MicroK8s with the pod and service CIDRs of the node;
+#   - turns on RBAC in the API server and Webhook authorization in the kubelet;
+#   - installs the Calico API server, which Submariner needs for IP pools;
+#   - pins Calico's node IP detection and MicroK8s' certificate handling, so
+#     the Submariner tunnel interface does not disturb them;
+#   - installs the watchdog that restores the gateway's policy routing;
+#   - limits IPsec to the central gateway's LoadBalancer address;
+#   - labels the node as the Submariner gateway.
 #
 # Usage:
 #   sudo ./setup-microk8s.sh
@@ -18,11 +22,13 @@
 #   CALICO_APISERVER   install the Calico API server, default true
 #   CALICO_IP_AUTODETECTION  Calico IP_AUTODETECTION_METHOD, default kubernetes-internal-ip
 #   LABEL_GATEWAY      label this node submariner.io/gateway=true, default true
+#   CENTRAL_GATEWAY_IP central gateway LoadBalancer address, the only IPsec peer; default from central.env
 #   WAIT_TIMEOUT       seconds to wait for MicroK8s readiness, default 600
 #
-# Re-running is safe. When MicroK8s is already installed the script verifies the
-# channel and the live CIDRs instead of reinstalling. CIDRs cannot change after
-# installation without `snap remove --purge microk8s`.
+# Re-running is safe. An existing installation is verified (channel, live
+# CIDRs), not reinstalled. The CIDRs change only after
+# `snap remove --purge microk8s`. An existing installation without RBAC or
+# kubelet Webhook authorization gets both; the control plane restarts once.
 set -euo pipefail
 
 MICROK8S_CHANNEL="${MICROK8S_CHANNEL:-1.33/stable}"
@@ -32,8 +38,14 @@ CALICO_VERSION="${CALICO_VERSION:-}"
 CALICO_APISERVER="${CALICO_APISERVER:-true}"
 CALICO_IP_AUTODETECTION="${CALICO_IP_AUTODETECTION:-kubernetes-internal-ip}"
 LABEL_GATEWAY="${LABEL_GATEWAY:-true}"
+here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+CENTRAL_GATEWAY_IP="${CENTRAL_GATEWAY_IP:-$(sed -n 's/^CENTRAL_GATEWAY_IP=//p' "${here}/central.env" 2>/dev/null | head -1)}"
 WAIT_TIMEOUT="${WAIT_TIMEOUT:-600}"
 LAUNCH_CONFIG=/var/snap/microk8s/common/.microk8s.yaml
+APISERVER_ARGS=/var/snap/microk8s/current/args/kube-apiserver
+KUBELET_ARGS=/var/snap/microk8s/current/args/kubelet
+KUBELET_KUBECONFIG=/var/snap/microk8s/current/credentials/kubelet.config
+KUBELET_CLIENT_CERT=/var/snap/microk8s/current/certs/apiserver-kubelet-client.crt
 CNI_MANIFEST=/var/snap/microk8s/current/args/cni-network/cni.yaml
 NO_REISSUE_LOCK=/var/snap/microk8s/current/var/lock/no-cert-reissue
 
@@ -65,6 +77,8 @@ for s in kubectl helm; do
 done
 
 # --- CIDR validation ---------------------------------------------------------
+[[ "$CENTRAL_GATEWAY_IP" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}$ ]] \
+  || die "CENTRAL_GATEWAY_IP '${CENTRAL_GATEWAY_IP}' is not an IPv4 address; set it in ${here}/central.env"
 service_api_ip="$(python3 - "$IPv4_CLUSTER_CIDR" "$IPv4_SERVICE_CIDR" <<'PY'
 import ipaddress
 import sys
@@ -97,6 +111,10 @@ else
   cat >"$LAUNCH_CONFIG" <<EOF
 ---
 version: 0.2.0
+extraKubeAPIServerArgs:
+  --authorization-mode: RBAC,Node
+extraKubeletArgs:
+  --authorization-mode: Webhook
 extraCNIEnv:
   IPv4_CLUSTER_CIDR: "${IPv4_CLUSTER_CIDR}"
   IPv4_SERVICE_CIDR: "${IPv4_SERVICE_CIDR}"
@@ -111,11 +129,102 @@ EOF
   microk8s status --wait-ready --timeout "$WAIT_TIMEOUT" >/dev/null
 fi
 
+# --- API and kubelet authorization -------------------------------------------
+# By default the MicroK8s API server allows every authenticated request
+# (AlwaysAllow). Any pod token could then read the broker token and the IPsec
+# PSK that the join stores in the cluster. A new installation gets RBAC,Node
+# from the launch configuration. On an existing one the rbac add-on sets it and
+# restarts the control plane once: the API is down for about a minute; the
+# pods, the tunnel and DNS keep running.
+#
+# With RBAC only one role is missing, calico-tier-getter, added with the Calico
+# API server below. The charts and Kubernetes bring all other roles. The admin
+# kubeconfig is in system:masters, so kubectl, helm and subctl keep working.
+#
+# The kubelet API (port 10250) also allows every authenticated request by
+# default, service-account tokens included: a pod that reaches it could run
+# commands in any container of the node, the gateway included. With Webhook the
+# kubelet asks the API server. The API server calls the kubelet with a
+# certificate in system:masters, so logs and exec keep working.
+authz_mode() { sed -n 's/^--authorization-mode=//p' "$APISERVER_ARGS" 2>/dev/null | tail -1; }
+kubelet_authz_mode() { sed -n 's/^--authorization-mode=//p' "$KUBELET_ARGS" 2>/dev/null | tail -1; }
+# The API server's answer for an identity without roles: "no" once RBAC is on.
+unbound_identity_reads_secrets() {
+  k auth can-i get secrets --namespace kube-system --as=setup-microk8s-rbac-probe 2>/dev/null || true
+}
+# The kubelet's HTTP status for a token without roles: 403 with Webhook, 200 when it allows
+# everything. The token expires after ten minutes.
+kubelet_status_for_unbound_token() {
+  local token
+  token="$(k create token default --namespace default --duration 10m 2>/dev/null || true)"
+  [[ -n "$token" ]] || return 0
+  printf 'header = "Authorization: Bearer %s"\n' "$token" \
+    | curl -sk --max-time 10 -o /dev/null -w '%{http_code}' -K - https://127.0.0.1:10250/pods 2>/dev/null || true
+}
+need_rbac=false
+need_webhook=false
+[[ ",$(authz_mode)," == *,RBAC,* ]] || need_rbac=true
+[[ "$(kubelet_authz_mode)" == Webhook ]] || need_webhook=true
+# Check both preconditions before changing anything.
+if [[ "$need_rbac" == true ]]; then
+  # The Node authorizer lets the kubelet read its pods' Secrets and ConfigMaps only under the node
+  # name in its certificate, issued at installation. A renamed host would stop mounting them.
+  kubelet_user="$(/snap/microk8s/current/kubectl --kubeconfig="$KUBELET_KUBECONFIG" auth whoami \
+    -o jsonpath='{.status.userInfo.username}' 2>/dev/null || true)"
+  registered_node="$(k get nodes -o jsonpath='{.items[0].metadata.name}')"
+  [[ -n "$kubelet_user" ]] || die "could not read the identity of the kubelet (${KUBELET_KUBECONFIG}); RBAC not enabled"
+  [[ "$kubelet_user" == "system:node:${registered_node}" ]] \
+    || die "the kubelet authenticates as '${kubelet_user}' but the node is registered as '${registered_node}'; restore the host name (README, Troubleshooting) before RBAC is enabled"
+fi
+if [[ "$need_webhook" == true ]]; then
+  # With Webhook the kubelet authorizes the API server too. Its client certificate for the
+  # kubelet must be in system:masters, or kubectl logs and exec would be refused.
+  client_subject="$(openssl x509 -in "$KUBELET_CLIENT_CERT" -noout -subject 2>/dev/null || true)"
+  if ! grep -q -- '^--kubelet-client-certificate=' "$APISERVER_ARGS" || [[ "$client_subject" != *system:masters* ]]; then
+    die "the API server has no kubelet client certificate in the group system:masters (${KUBELET_CLIENT_CERT}); kubelet authorization not changed"
+  fi
+  was="$(kubelet_authz_mode)"
+  log "Setting the kubelet authorization mode to Webhook (was ${was:-unset, the kubelet then allows every authenticated request})"
+  if grep -q '^--authorization-mode=' "$KUBELET_ARGS"; then
+    sed -i 's|^--authorization-mode=.*|--authorization-mode=Webhook|' "$KUBELET_ARGS"
+  else
+    [[ -z "$(tail -c1 "$KUBELET_ARGS")" ]] || echo >>"$KUBELET_ARGS"
+    printf '%s\n' '--authorization-mode=Webhook' >>"$KUBELET_ARGS"
+  fi
+fi
+if [[ "$need_rbac" == true ]]; then
+  was="$(authz_mode)"
+  log "Enabling RBAC authorization (was ${was:-unset}); the control plane restarts once"
+  microk8s enable rbac
+elif [[ "$need_webhook" == true ]]; then
+  log "Restarting the control plane once to apply the kubelet setting"
+  snap restart microk8s.daemon-kubelite
+fi
+if [[ "$need_rbac" == true || "$need_webhook" == true ]]; then
+  microk8s status --wait-ready --timeout "$WAIT_TIMEOUT" >/dev/null
+fi
+api_answer=""
+kubelet_answer=""
+for _ in $(seq 1 36); do
+  api_answer="$(unbound_identity_reads_secrets)"
+  kubelet_answer="$(kubelet_status_for_unbound_token)"
+  [[ "$api_answer" == no && "$kubelet_answer" == 403 ]] && break
+  sleep 5
+done
+[[ "$api_answer" == no ]] \
+  || die "the API server still allows a request RBAC must refuse (${APISERVER_ARGS}: --authorization-mode=$(authz_mode)); restart it with 'snap restart microk8s.daemon-kubelite' and run this script again"
+[[ "$kubelet_answer" == 403 ]] \
+  || die "the kubelet gave HTTP status '${kubelet_answer:-none}' to a token without a role, expected 403 (${KUBELET_ARGS}: --authorization-mode=$(kubelet_authz_mode)); restart it with 'snap restart microk8s.daemon-kubelite' and run this script again"
+log "API authorization: $(authz_mode); kubelet authorization: $(kubelet_authz_mode)"
+
 log "Waiting for Calico and CoreDNS"
 wait_for kube-system ds/calico-node
 k -n kube-system rollout status ds/calico-node --timeout=300s
 wait_for kube-system deploy/coredns
 k -n kube-system rollout status deploy/coredns --timeout=300s
+# The API server reads container logs through the kubelet API, which now authorizes it.
+k -n kube-system logs ds/calico-node -c calico-node --tail=1 >/dev/null 2>&1 \
+  || die "the API server cannot read container logs through the kubelet; check ${KUBELET_CLIENT_CERT} and 'journalctl -u snap.microk8s.daemon-kubelite'"
 
 # --- coexistence with the Submariner tunnel interface -------------------------
 # At join time the route agent adds a vx-submariner interface with an address
@@ -203,6 +312,40 @@ if [[ "$CALICO_APISERVER" == true ]]; then
     sleep 5
   done
   [[ "$available" == True ]] || die "APIService v3.projectcalico.org is not Available"
+
+  # The Calico API server returns policies only to callers that may also read their tier. The
+  # kube-controller-manager lacks that right, so with RBAC its garbage collector and quota
+  # controller never sync and log a failure at every period. Later Calico 3.29 releases grant it;
+  # MicroK8s 1.33 ships 3.29.3. The objects carry the upstream names, so a newer manifest takes
+  # them over.
+  if k get tiers.projectcalico.org >/dev/null 2>&1; then
+    k apply -f - >/dev/null <<'TIERS'
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: calico-tier-getter
+rules:
+  - apiGroups: [projectcalico.org]
+    resources: [tiers]
+    verbs: [get]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: calico-tier-getter
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: calico-tier-getter
+subjects:
+  - apiGroup: rbac.authorization.k8s.io
+    kind: User
+    name: system:kube-controller-manager
+TIERS
+    [[ "$(k auth can-i get tiers.projectcalico.org --as=system:kube-controller-manager 2>/dev/null || true)" == yes ]] \
+      || die "the kube-controller-manager may not read Calico tiers although calico-tier-getter was applied"
+    log "The kube-controller-manager may read Calico tiers (ClusterRole calico-tier-getter)"
+  fi
 fi
 
 # --- hostname stability --------------------------------------------------------
@@ -217,14 +360,14 @@ if [[ -d /etc/cloud/cloud.cfg.d ]] && ! grep -qs '^preserve_hostname: true' /etc
 fi
 
 # --- systemd-networkd and foreign routes ---------------------------------------
-# The Submariner route agent installs policy routing on the gateway node (rule
-# "from all lookup 150" and table-150 routes to the remote CIDRs with the Calico
-# address as source) so that host-originated packets, the gateway's own health
-# check included, match the IPsec policies. systemd-networkd deletes routes and
-# rules it does not own every time it starts, and unattended upgrades restart it
-# through needrestart (openssl update, 2026-09-30); the route agent does not put
-# them back and the connection degrades to "error". Keep networkd away from
-# foreign routes. Effective at its next start; nothing is restarted here.
+# On the gateway node the route agent installs policy routing: the rule "from
+# all lookup 150" and table-150 routes to the remote CIDRs, with the Calico
+# address as source, so that host traffic (the gateway's health check included)
+# matches the IPsec policies. systemd-networkd deletes routes and rules it does
+# not own when it starts, for example after an unattended upgrade. The route
+# agent does not restore them, and the connection degrades to "error". This
+# drop-in keeps networkd away from them from its next start; nothing is
+# restarted here. The route watchdog below covers the remaining case.
 networkd_dropin=/etc/systemd/networkd.conf.d/10-submariner-foreign-routes.conf
 networkd_dropin_want=$'[Network]\nManageForeignRoutes=no\nManageForeignRoutingPolicyRules=no'
 if [[ -d /etc/systemd ]] && [[ "$(cat "$networkd_dropin" 2>/dev/null)" != "$networkd_dropin_want" ]]; then
@@ -232,6 +375,342 @@ if [[ -d /etc/systemd ]] && [[ "$(cat "$networkd_dropin" 2>/dev/null)" != "$netw
   printf '%s\n' "$networkd_dropin_want" >"$networkd_dropin"
   chmod 0644 "$networkd_dropin"
   log "systemd-networkd keeps foreign routes and rules (${networkd_dropin}); effective at its next start"
+fi
+
+# --- route watchdog ------------------------------------------------------------
+# With a DHCP uplink, a restart of systemd-networkd removes and re-adds the
+# interface address. The kernel then drops every route through the interface,
+# table 150 included, and nothing restores them. No KeepConfiguration value
+# prevents this on Ubuntu 24.04 (systemd 255).
+#
+# Every minute the watchdog compares table 150 with the remote subnets in the
+# Gateway status. After two failed checks in a row it deletes the route agent
+# pod; the new pod restores the rule and the routes. At most one restart per 15
+# minutes. It does nothing while the API does not answer or this node is not
+# the active gateway. Log: journalctl -u submariner-route-watchdog
+#
+# It runs without root, capabilities or open ports. Its own account may read
+# the Gateway objects and delete the route agent pod, nothing else: the
+# Submariner resource on this cluster holds the broker token and the PSK.
+# systemd passes the kubeconfig to the service with LoadCredential.
+watchdog_bin=/usr/local/sbin/submariner-route-watchdog
+watchdog_unit=/etc/systemd/system/submariner-route-watchdog.service
+watchdog_dir=/etc/submariner-route-watchdog
+watchdog_kubeconfig="${watchdog_dir}/kubeconfig"
+watchdog_ns=submariner-operator
+watchdog_sa=submariner-route-watchdog
+log "Granting the route watchdog its own account (${watchdog_ns}/${watchdog_sa})"
+# Order matters: the token controller deletes a token Secret whose account is missing, and the
+# policy must exist before the Role grants the right. Helm reuses the namespace at the join.
+k apply -f - >/dev/null <<EOF
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: ${watchdog_ns}
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: ${watchdog_sa}
+  namespace: ${watchdog_ns}
+automountServiceAccountToken: false
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: ${watchdog_sa}-token
+  namespace: ${watchdog_ns}
+  annotations:
+    kubernetes.io/service-account.name: ${watchdog_sa}
+type: kubernetes.io/service-account-token
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata:
+  name: ${watchdog_sa}
+spec:
+  failurePolicy: Fail
+  matchConstraints:
+    namespaceSelector:
+      matchLabels:
+        kubernetes.io/metadata.name: ${watchdog_ns}
+    resourceRules:
+      - apiGroups: ['']
+        apiVersions: [v1]
+        operations: [DELETE]
+        resources: [pods]
+  matchConditions:
+    - name: caller-is-route-watchdog
+      expression: request.userInfo.username == 'system:serviceaccount:${watchdog_ns}:${watchdog_sa}'
+  validations:
+    - expression: >-
+        has(oldObject.metadata.labels) && 'app' in oldObject.metadata.labels
+        && oldObject.metadata.labels['app'] == 'submariner-routeagent'
+      message: the route watchdog may delete only the route agent pod
+      reason: Forbidden
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicyBinding
+metadata:
+  name: ${watchdog_sa}
+spec:
+  policyName: ${watchdog_sa}
+  validationActions: [Deny]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: ${watchdog_sa}
+  namespace: ${watchdog_ns}
+rules:
+  - apiGroups: [submariner.io]
+    resources: [gateways]
+    verbs: [get]
+  - apiGroups: ['']
+    resources: [pods]
+    verbs: [deletecollection]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: ${watchdog_sa}
+  namespace: ${watchdog_ns}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: ${watchdog_sa}
+subjects:
+  - kind: ServiceAccount
+    name: ${watchdog_sa}
+    namespace: ${watchdog_ns}
+EOF
+token_b64=""
+for _ in $(seq 1 30); do
+  token_b64="$(k -n "$watchdog_ns" get secret "${watchdog_sa}-token" -o jsonpath='{.data.token}' 2>/dev/null || true)"
+  [[ -n "$token_b64" ]] && break
+  sleep 2
+done
+[[ -n "$token_b64" ]] || die "the token controller did not fill the secret ${watchdog_ns}/${watchdog_sa}-token"
+# The token stays in variables and pipes; it never appears on a command line.
+token="$(printf '%s' "$token_b64" | base64 -d)"
+api_server="$(k config view --raw --minify -o jsonpath='{.clusters[0].cluster.server}')"
+api_ca="$(k config view --raw --minify -o jsonpath='{.clusters[0].cluster.certificate-authority-data}')"
+[[ -n "$api_server" && -n "$api_ca" ]] || die "could not read the API server address and CA from the MicroK8s kubeconfig"
+watchdog_kubeconfig_want="apiVersion: v1
+kind: Config
+clusters:
+  - name: microk8s
+    cluster:
+      server: ${api_server}
+      certificate-authority-data: ${api_ca}
+users:
+  - name: ${watchdog_sa}
+    user:
+      token: ${token}
+contexts:
+  - name: ${watchdog_sa}
+    context:
+      cluster: microk8s
+      user: ${watchdog_sa}
+      namespace: ${watchdog_ns}
+current-context: ${watchdog_sa}"
+watchdog_bin_want="$(cat <<'WATCHDOG'
+#!/usr/bin/env bash
+# Written by setup-microk8s.sh. Restarts the Submariner route agent when the policy routing of
+# this gateway node is incomplete: the rule "from all lookup 150" and one table-150 route per
+# subnet of the remote endpoints. Log: journalctl -u submariner-route-watchdog
+set -u
+kubectl=(/snap/microk8s/current/kubectl --kubeconfig "${CREDENTIALS_DIRECTORY}/kubeconfig" --request-timeout=15s)
+ns=submariner-operator
+interval=60
+needed=2
+cooldown=900
+bad=0
+last=0
+api_ok=1
+err=/tmp/kubectl.err
+node="$(hostname | tr '[:upper:]' '[:lower:]')"
+pods="/api/v1/namespaces/${ns}/pods?labelSelector=app%3Dsubmariner-routeagent&fieldSelector=spec.nodeName%3D${node}"
+trap 'exit 0' TERM INT
+echo "watching the policy routing of ${node}"
+while :; do
+  # The Gateway object is named after its node. First line: HA status. Then one line per
+  # connection: the subnets of the remote endpoint.
+  if state="$("${kubectl[@]}" -n "$ns" get gateways.submariner.io "$node" \
+    -o jsonpath='{.status.haStatus}{"\n"}{range .status.connections[*]}{.endpoint.subnets}{"\n"}{end}' 2>"$err")"; then
+    [ "$api_ok" = 1 ] || echo "Gateway object readable again"
+    api_ok=1
+  else
+    [ "$api_ok" = 0 ] || echo "cannot read the Gateway object: $(head -n 1 "$err")"
+    api_ok=0
+    state=""
+  fi
+  ha="$(printf '%s\n' "$state" | head -n 1)"
+  want="$(printf '%s\n' "$state" | tail -n +2 | tr -d '[]"' | tr ',' '\n' | sed '/^$/d' | sort -u)"
+  # Only the active gateway needs table 150. Never restart without data.
+  if [ "$api_ok" = 0 ] || [ "$ha" != active ] || [ -z "$want" ]; then
+    bad=0
+  else
+    have="$(ip route show table 150 2>/dev/null | awk '{print $1}')"
+    missing=""
+    for c in $want; do
+      printf '%s\n' "$have" | grep -qx "$c" || missing="${missing} ${c}"
+    done
+    rule=0
+    ip rule show | grep -q 'lookup 150' && rule=1
+    if [ "$rule" = 1 ] && [ -z "$missing" ]; then
+      [ "$bad" -gt 0 ] && echo "policy routing complete again"
+      bad=0
+    else
+      bad=$((bad + 1))
+      table="$(ip route show table 150 2>/dev/null | tr '\n' ';')"
+      echo "policy routing incomplete (${bad}/${needed}): rule=${rule} missing:${missing:- none}; table 150: ${table}"
+      now="$(date +%s)"
+      if [ "$bad" -ge "$needed" ] && [ $((now - last)) -ge "$cooldown" ]; then
+        # One deletecollection request; the answer holds pod specs and is not printed.
+        if "${kubectl[@]}" delete --raw "$pods" >/dev/null 2>"$err"; then
+          echo "restarted the route agent on ${node}"
+          last="$now"
+        else
+          echo "route agent restart failed: $(head -n 1 "$err")"
+        fi
+        bad=0
+      fi
+    fi
+  fi
+  sleep "$interval" &
+  wait $!
+done
+WATCHDOG
+)"
+watchdog_unit_want="[Unit]
+Description=Restart the Submariner route agent when the gateway policy routing is incomplete (written by setup-microk8s.sh)
+After=snap.microk8s.daemon-kubelite.service
+
+[Service]
+ExecStart=${watchdog_bin}
+Restart=always
+RestartSec=30
+DynamicUser=yes
+LoadCredential=kubeconfig:${watchdog_kubeconfig}
+Environment=HOME=/tmp
+ProtectHome=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK
+RestrictNamespaces=yes
+RestrictRealtime=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+CapabilityBoundingSet=
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallErrorNumber=EPERM
+MemoryMax=192M
+
+[Install]
+WantedBy=multi-user.target"
+watchdog_changed=false
+# LoadCredential copies the kubeconfig only when the service starts: a new token needs a restart.
+install -d -m 0755 "$watchdog_dir"
+if [[ "$(cat "$watchdog_kubeconfig" 2>/dev/null)" != "$watchdog_kubeconfig_want" ]]; then
+  (umask 077 && printf '%s\n' "$watchdog_kubeconfig_want" >"$watchdog_kubeconfig")
+  watchdog_changed=true
+fi
+chmod 0600 "$watchdog_kubeconfig"
+if [[ "$(cat "$watchdog_bin" 2>/dev/null)" != "$watchdog_bin_want" ]]; then
+  printf '%s\n' "$watchdog_bin_want" >"$watchdog_bin"
+  watchdog_changed=true
+fi
+chmod 0755 "$watchdog_bin"
+if [[ "$(cat "$watchdog_unit" 2>/dev/null)" != "$watchdog_unit_want" ]]; then
+  printf '%s\n' "$watchdog_unit_want" >"$watchdog_unit"
+  chmod 0644 "$watchdog_unit"
+  systemctl daemon-reload
+  watchdog_changed=true
+fi
+systemctl -q enable submariner-route-watchdog.service
+if [[ "$watchdog_changed" == true ]] || ! systemctl -q is-active submariner-route-watchdog.service; then
+  systemctl restart submariner-route-watchdog.service
+  log "Route watchdog running (unit submariner-route-watchdog): restarts the route agent when table 150 loses its routes"
+fi
+
+# --- IPsec with the central gateway only -------------------------------------
+# Submariner connects every gateway to every other one. Other remote nodes
+# belong to other sites and can reach this node even through NAT, so it
+# exchanges IPsec only with the central gateway's LoadBalancer address. The
+# table drops IKE (UDP 500), NAT discovery (UDP 4490) and NAT-T (UDP 4500) to
+# and from every other address, and all of them over IPv6. That includes the
+# central gateway node's own address, which changes when the provider moves the
+# gateway. A dedicated unit loads the table at boot: Ubuntu's nftables service
+# would flush the Calico and Submariner rules. The hardening playbook adds the
+# same restriction in UFW.
+hub_dir=/etc/submariner-hub
+hub_nft="${hub_dir}/firewall.nft"
+hub_unit=/etc/systemd/system/submariner-hub-firewall.service
+hub_nft_want="#!/usr/sbin/nft -f
+# Written by setup-microk8s.sh: Submariner IPsec only with ${CENTRAL_GATEWAY_IP}.
+table inet submariner_hub
+delete table inet submariner_hub
+table inet submariner_hub {
+	chain input {
+		type filter hook input priority filter - 10; policy accept;
+		udp dport { 500, 4490, 4500 } ip saddr != ${CENTRAL_GATEWAY_IP} counter drop
+		meta nfproto ipv6 udp dport { 500, 4490, 4500 } counter drop
+	}
+	chain output {
+		type filter hook output priority filter - 10; policy accept;
+		udp dport { 500, 4490, 4500 } ip daddr != ${CENTRAL_GATEWAY_IP} counter drop
+		meta nfproto ipv6 udp dport { 500, 4490, 4500 } counter drop
+	}
+}"
+hub_unit_want="[Unit]
+Description=Submariner IPsec only with the central gateway (written by setup-microk8s.sh)
+DefaultDependencies=no
+Wants=network-pre.target
+Before=network-pre.target shutdown.target
+Conflicts=shutdown.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/sbin/nft -f ${hub_nft}
+ExecReload=/usr/sbin/nft -f ${hub_nft}
+ExecStop=/usr/sbin/nft delete table inet submariner_hub
+
+[Install]
+WantedBy=sysinit.target"
+command -v nft >/dev/null 2>&1 || die "nft not found; run setup-tools.sh (package nftables)"
+hub_changed=false
+install -d -m 0755 "$hub_dir"
+if [[ "$(cat "$hub_nft" 2>/dev/null)" != "$hub_nft_want" ]]; then
+  printf '%s\n' "$hub_nft_want" >"$hub_nft"
+  chmod 0644 "$hub_nft"
+  hub_changed=true
+fi
+nft -c -f "$hub_nft" || die "nft rejected ${hub_nft}"
+if [[ "$(cat "$hub_unit" 2>/dev/null)" != "$hub_unit_want" ]]; then
+  printf '%s\n' "$hub_unit_want" >"$hub_unit"
+  chmod 0644 "$hub_unit"
+  systemctl daemon-reload
+  hub_changed=true
+fi
+systemctl -q enable submariner-hub-firewall.service
+if [[ "$hub_changed" == true ]] || ! systemctl -q is-active submariner-hub-firewall.service; then
+  systemctl restart submariner-hub-firewall.service
+  log "IPsec limited to the central gateway ${CENTRAL_GATEWAY_IP} (table inet submariner_hub, unit submariner-hub-firewall)"
+  # A joined node keeps the address its gateway discovered, possibly the central gateway node's
+  # own address, now refused. A new gateway pod runs NAT discovery again and settles on the
+  # LoadBalancer address; the tunnel is down for about a minute.
+  if k -n submariner-operator get pods -l app=submariner-gateway -o name 2>/dev/null | grep -q .; then
+    log "Recreating the Submariner gateway pod so that it reconnects through ${CENTRAL_GATEWAY_IP}"
+    k -n submariner-operator delete pod -l app=submariner-gateway --wait=false >/dev/null
+  fi
 fi
 
 # --- gateway label -----------------------------------------------------------
@@ -249,6 +728,9 @@ MicroK8s is ready.
   Node:          ${node_name}
   Pod CIDR:      ${IPv4_CLUSTER_CIDR}
   Service CIDR:  ${IPv4_SERVICE_CIDR}
+  Authorization: API server $(authz_mode), kubelet $(kubelet_authz_mode)
+  IPsec peer:    ${CENTRAL_GATEWAY_IP} only
+  Route watchdog: $(systemctl is-active submariner-route-watchdog.service 2>/dev/null || echo inactive)
   Calico:        ${CALICO_VERSION:-not installed}
   Helm:          $(microk8s.helm3 version --short 2>/dev/null || echo unavailable)
 
