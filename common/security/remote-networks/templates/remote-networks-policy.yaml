@@ -38,9 +38,9 @@ remote source address.
 
 The chart fails instead of rendering when remoteNodes is not a list (the
 federation's file lacks or misspells the key), or when a network is not an
-IPv4 CIDR, is wider than minPrefixLength, or overlaps a network of this
-cluster (centralNetworks). A failed Application keeps the policy it synced
-last.
+IPv4 CIDR, is wider than minPrefixLength, lies outside privateRanges, or
+overlaps a network of this cluster (centralNetworks). A failed Application
+keeps the policy it synced last.
 */ -}}
 {{- $ns := .Values.targetNamespace | toString }}
 {{- if not (regexMatch `^[a-z0-9]([-a-z0-9]*[a-z0-9])?$` $ns) }}
@@ -51,6 +51,7 @@ last.
 {{- end }}
 {{- $minPrefix := int .Values.minPrefixLength }}
 {{- $central := .Values.centralNetworks }}
+{{- $private := .Values.privateRanges }}
 {{- $pods := list }}
 {{- $all := list }}
 {{- range $i, $node := .Values.remoteNodes }}
@@ -61,6 +62,16 @@ last.
 {{- end }}
 {{- if lt (atoi (last (splitList "/" $cidr))) $minPrefix }}
 {{- fail (printf "remoteNodes[%d].%s %s is wider than /%d (minPrefixLength)" $i $key $cidr $minPrefix) }}
+{{- end }}
+{{- /* Inside a range: at least as long a prefix, and the same network bits. */ -}}
+{{- $inside := false }}
+{{- range $range := $private }}
+{{- if and (ge (atoi (last (splitList "/" $cidr))) (atoi (last (splitList "/" $range)))) (include "remote-networks.overlap" (list $cidr $range)) }}
+{{- $inside = true }}
+{{- end }}
+{{- end }}
+{{- if not $inside }}
+{{- fail (printf "remoteNodes[%d].%s %s is outside privateRanges (RFC 1918): it could cover a public address of this cluster" $i $key $cidr) }}
 {{- end }}
 {{- range $net := $central }}
 {{- if include "remote-networks.overlap" (list $cidr $net) }}

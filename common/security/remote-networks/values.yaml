@@ -9,21 +9,22 @@
 targetNamespace: ''
 
 # Remote nodes of the federation, one entry per node:
-#   - podCidr: 192.0.2.0/24  # pod network of the remote cluster
-#     serviceCidr: 198.51.100.0/24  # service network of the remote cluster
+#   - podCidr: 10.5.0.0/16  # pod network of the remote cluster
+#     serviceCidr: 10.152.190.0/24  # service network of the remote cluster
 # An empty list renders no policy. A missing key fails the render.
 remoteNodes: []
-# Networks of this cluster. The chart refuses a remote network that overlaps one
-# of them: the Deny rules apply to every pod, so such a network would cut this
-# cluster's own traffic. The ApplicationSet does not set this key, so a
-# federation's file cannot change it. scripts/check-remote-cidrs.sh checks it
-# against the other places that name these networks.
+# The Deny rules apply to every pod, so no remote network may cover an address of
+# this cluster. Remote networks must lie in privateRanges: the public addresses of
+# this cluster (API server, nodes, LoadBalancers) need no entry. centralNetworks
+# lists its private networks, and the chart refuses a remote network that overlaps
+# one of them. The ApplicationSet sets neither key, so a federation's file cannot
+# change them. scripts/check-remote-cidrs.sh checks centralNetworks against the
+# other places that name these networks; check-central.sh fails when a node or API
+# server address is private and not listed.
+privateRanges: [10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16]  # RFC 1918
 centralNetworks:
   - 10.42.0.0/16  # pod network
   - 10.43.0.0/16  # service network
-  - 148.187.143.17/32  # API server (apiServer.cidrs of the network-policy charts)
-  - 148.187.143.23/32
-  - 148.187.143.34/32
 # Calico tier of the policy (common/security/remote-clusters)
 tier: remote-clusters
 

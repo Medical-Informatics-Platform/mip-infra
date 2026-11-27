@@ -10,7 +10,8 @@
 # It also checks that:
 #   - no network overlaps another one or a central network;
 #   - the chart's centralNetworks covers the central networks, and the chart refuses
-#     a network that overlaps one of them, and a file without remoteNodes;
+#     a network that overlaps one of them, a public network, and a file without
+#     remoteNodes;
 #   - the policy rendered for each federation passes its pod CIDRs to its own
 #     namespace only and ends, in each direction, with a Deny of all its networks;
 #   - common/security/remote-clusters names no network and no namespace.
@@ -67,9 +68,9 @@ if [[ -z "$nodes" ]]; then
 fi
 
 # --- 2. no overlap, among remote networks and with the central cluster -----------------------------
-# Central networks: the operator values of this cluster, the ipBlocks of the remote worker's
-# NetworkPolicy, which admits the central pod and service networks only, and the API server
-# addresses of the network-policy charts.
+# Central networks: the operator values of this cluster, and the ipBlocks of the remote worker's
+# NetworkPolicy, which admits the central pod and service networks only. The public addresses of
+# this cluster need no entry: the chart refuses public remote networks.
 remote=$(awk '{print $2; print $3}' <<<"$nodes" | sed '/^$/d')
 central=""
 if [[ -f common/submariner/operator/values.yaml ]]; then
@@ -80,12 +81,12 @@ for pol in deployments/hybrid/federations/*/remote-node/exaflow-worker/networkpo
   [[ -f "$pol" ]] || continue
   central+=$(yq -r '.. | select(tag == "!!map" and has("ipBlock")) | .ipBlock.cidr' "$pol")$'\n'
 done
-central+=$(yq -r '.apiServer.cidrs[]' common/security/federation/values.yaml)$'\n'
 central=$(sed '/^$/d' <<<"$central" | sort -u)
 
-# The chart refuses a remote network that overlaps its centralNetworks, so Argo CD never syncs a
-# Deny of this cluster's own networks. centralNetworks must cover every central network above, and
-# the refusals must work: a network inside a central one, and a file without remoteNodes.
+# The chart refuses a remote network that overlaps its centralNetworks or lies outside its
+# privateRanges, so Argo CD never syncs a Deny of this cluster's own addresses. centralNetworks must
+# cover every central network above, and the refusals must work: a network inside a central one, a
+# public network, and a file without remoteNodes.
 chart_central=$(yq -r '.centralNetworks[]' "$chart/values.yaml" | sort -u)
 for c in $central; do
   grep -qx -- "$c" <<<"$chart_central" || fail "$chart/values.yaml: centralNetworks lacks $c, a network of this cluster"
@@ -102,11 +103,13 @@ refused() { # $1 description, $2 part of the expected message; helm arguments fo
 first=$(head -n 1 <<<"$chart_central")
 inside="${first%/*}/$(( ${first#*/} < 24 ? 24 : ${first#*/} ))"
 refused "a remote network inside $first" "overlaps $first" \
-  --set-json "remoteNodes=[{\"podCidr\":\"${inside}\",\"serviceCidr\":\"192.0.2.0/24\"}]"
+  --set-json "remoteNodes=[{\"podCidr\":\"${inside}\",\"serviceCidr\":\"172.31.250.0/24\"}]"
+refused "a public remote network" "outside privateRanges" \
+  --set-json 'remoteNodes=[{"podCidr":"198.51.100.0/24","serviceCidr":"172.31.250.0/24"}]'
 refused "a federation file without remoteNodes" "remoteNodes is not a list" --set-json 'remoteNodes=null'
 helm template check "$chart" --set-string targetNamespace=check \
-  --set-json 'remoteNodes=[{"podCidr":"192.0.2.0/24","serviceCidr":"198.51.100.0/24"}]' >/dev/null 2>&1 \
-  || fail "$chart refuses networks that overlap no central network"
+  --set-json 'remoteNodes=[{"podCidr":"10.250.0.0/24","serviceCidr":"172.31.250.0/24"}]' >/dev/null 2>&1 \
+  || fail "$chart refuses private networks that overlap no central network"
 # shellcheck disable=SC2086  # one CIDR per word
 set -- $remote
 while (( $# > 1 )); do

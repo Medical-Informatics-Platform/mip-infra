@@ -57,7 +57,7 @@ federationAccess:
 
 JupyterHub pods, the notebook operator and its RBAC reconciler talk to the Kubernetes API. Policies are evaluated after the `kubernetes` Service DNAT, so the egress rules on TCP 6443 see the control-plane node addresses. `apiServer.cidrs` limits these rules to the listed addresses; an empty list admits any address on 6443.
 
-- Keep the list equal in `federation/values.yaml` and `common-templates/values.yaml` (CI compares them). The chart `remote-networks/` lists the same addresses in `centralNetworks`.
+- Keep the list equal in `federation/values.yaml` and `common-templates/values.yaml` (CI compares them).
 - Update it when the control-plane nodes change. `check-central.sh` fails when a live endpoint is not in the list. Read the addresses:
 
   ```bash
@@ -75,7 +75,7 @@ The Calico tier `remote-clusters` adds a cluster-wide guard. Calico evaluates it
 
 - `remote-networks/` builds one policy per hybrid federation, `remote-clusters.<namespace>`. It passes two flows to the federation's NetworkPolicies: remote workers to the aggregation server, and the controller to the remote workers. It denies every other flow from or to the federation's remote networks, in every namespace. The namespace is matched by `kubernetes.io/metadata.name`. The controller's HTTP API and the Flower server are closed to remote networks, and other federations are closed like any other namespace.
 - The last policy of the tier, `remote-clusters.pass-other-traffic`, passes all other traffic on to the Kubernetes NetworkPolicies.
-- The Deny rules apply to every pod. The chart therefore refuses a file without the `remoteNodes` list, a network wider than `/16`, and a network that overlaps a network of this cluster (`centralNetworks`: pod and service networks, API server addresses). A refused file leaves its Application in error and the last synced policy in place.
+- The Deny rules apply to every pod. The chart therefore refuses a file without the `remoteNodes` list, a network wider than `/16`, a network outside the private ranges (`privateRanges`, RFC 1918), and a network that overlaps a private network of this cluster (`centralNetworks`: pod and service networks). The public addresses of this cluster, API server and nodes included, need no list: no remote network can cover them. This holds only while they are public. If a node or API server address becomes private, add it to `centralNetworks`; `check-central.sh` fails until you do. A refused file leaves its Application in error and the last synced policy in place.
 - The ApplicationSet `federation-remote-networks` reads `deployments/hybrid/federations/*/mip-infrastructure/remote-networks.yaml`; the namespace is the directory name. Nothing under `common/` names a federation or a network.
 - The Application `netpol-remote-clusters` syncs the tier, and `netpol-<namespace>-remote` each federation policy. Both are in the project `mip-argo-project-security`, which allows `Tier` and `GlobalNetworkPolicy`. The Argo CD application controller may write only policies named `remote-clusters.*`.
 
@@ -83,7 +83,7 @@ To add a remote node, put its pod CIDR into the federation's `submariner-policie
 
 - both files agree with the node's `submariner-values*.yaml`;
 - no network overlaps another one or a network of this cluster;
-- `centralNetworks` covers the networks of this cluster, and the chart refuses an overlapping network and a file without `remoteNodes`;
+- `centralNetworks` covers the private networks of this cluster, and the chart refuses an overlapping network, a public network and a file without `remoteNodes`;
 - the rendered policy passes the networks to the federation's namespace only.
 
 Migration: the earlier shared policy `remote-clusters.confine-remote-clusters` is not pruned. While it exists it decides first, and the federation policies have no effect; `check-central.sh` warns. Delete it once `check-central.sh` reports the federation's policy as correct:

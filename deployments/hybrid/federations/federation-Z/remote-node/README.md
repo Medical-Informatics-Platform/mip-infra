@@ -28,7 +28,7 @@ The central cluster denies every other flow, including the controller's HTTP API
 | --- | --- | --- | --- |
 | `SUBMARINER_VERSION` | `0.25.0` | `setup-tools.sh`, `join-submariner.sh`, `preflight.sh` | Equal to the chart version in `common/submariner/operator/kustomization.yaml`. `subctl` is pinned to it and checked against the release's SHA-256 list. |
 | `MICROK8S_CHANNEL` | `1.33/stable` | `setup-microk8s.sh` | A Kubernetes minor close to the central cluster's. The two do not have to match. |
-| `IPv4_CLUSTER_CIDR` | `10.3.0.0/16` | `setup-microk8s.sh`, the node's values file, enrollment `SUBNETS` | Pod CIDR. Must not overlap the central pod CIDR (`10.42.0.0/16`), the central service CIDR or another remote node. |
+| `IPv4_CLUSTER_CIDR` | `10.3.0.0/16` | `setup-microk8s.sh`, the node's values file, enrollment `SUBNETS` | Pod CIDR. Must be private (RFC 1918: `10.0.0.0/8`, `172.16.0.0/12`, `192.168.0.0/16`) and must not overlap the central pod CIDR (`10.42.0.0/16`), the central service CIDR or another remote node. |
 | `IPv4_SERVICE_CIDR` | `10.152.185.0/24` | same | Service CIDR. Same rule. |
 | `VALUES_FILE` | `submariner-values.yaml` | `join-submariner.sh` | One file per node, because the CIDRs are literals (`submariner-values-node2.yaml` for the second node). The join refuses a file whose CIDRs differ from the live cluster. |
 | `DATASET` | `synthetic_a` | `deploy-worker.sh` | The CSV of `exaflow-worker/data/synthetic_v_0_1/` this node serves. Every node serves a different one. |

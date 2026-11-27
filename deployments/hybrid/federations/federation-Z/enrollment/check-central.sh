@@ -18,7 +18,7 @@
 #     verify-enrollment.sh for every enrolled account
 #   - network policies: the federation's NetworkPolicies; the remote-clusters tier passes remote
 #     networks only to the federation's aggregation server, denies them elsewhere and ends with a Pass;
-#     the policy Applications
+#     node and API server addresses out of reach of remote networks; the policy Applications
 #   - API server egress pins (apiServer.cidrs), and subctl when installed
 #
 # Parameters (environment variables or key=value arguments):
@@ -417,6 +417,19 @@ done
 # the federation's remote pod CIDRs, then in each direction a Deny of all its remote networks. The tier ends
 # with remote-clusters.pass-other-traffic.
 cidr_set() { tr -d '[]"' | tr ', ' '\n' | sed '/^$/d' | sort -u | paste -sd, -; } # list or JSON array -> sorted set
+in_cidr() { # $1 IPv4 address, $2 cidr: true when the address lies in the cidr
+  local ip=$1 net=${2%/*} bits=32 a b c d mask
+  [[ "$2" == */* ]] && bits=${2#*/}
+  IFS=. read -r a b c d <<<"$ip"; ip=$(( (a << 24) | (b << 16) | (c << 8) | d ))
+  IFS=. read -r a b c d <<<"$net"; net=$(( (a << 24) | (b << 16) | (c << 8) | d ))
+  mask=$(( bits == 0 ? 0 : (0xFFFFFFFF << (32 - bits)) & 0xFFFFFFFF ))
+  (( (ip & mask) == (net & mask) ))
+}
+in_any() { # $1 IPv4 address, $2 CIDRs separated by white space: true when one of them holds the address
+  local c
+  for c in $2; do in_cidr "$1" "$c" && return 0; done
+  return 1
+}
 tier_policies="$(kc get globalnetworkpolicies.projectcalico.org -o jsonpath='{range .items[?(@.spec.tier=="remote-clusters")]}{.metadata.name}{" "}{end}' 2>/dev/null)"
 if [[ -z "${tier_policies// /}" ]]; then
   warn "policies of the tier remote-clusters" "none found (Applications netpol-remote-clusters and netpol-${FEDERATION_NS}-remote)"
@@ -502,6 +515,44 @@ else
     warn "obsolete policy confine-remote-clusters" "still present; it is evaluated first, so the federation policies have no effect. Once the checks above pass: kubectl delete globalnetworkpolicies.projectcalico.org remote-clusters.confine-remote-clusters"
   fi
 fi
+# The chart remote-networks refuses remote networks outside privateRanges and those that overlap
+# centralNetworks, so the public addresses of this cluster are out of their reach. A private node or API
+# server address must be in centralNetworks, or a remote network could cover it and cut it off.
+rn_values="$(dirname "$0")/../../../../../common/security/remote-networks/values.yaml"
+values_list() { # $1 top-level key of the remote-networks values: its list items, one per line
+  awk -v key="$1" '
+    $0 ~ "^" key ":" {
+      if (match($0, /\[[^]]*\]/)) {  # flow style: key: [a, b]
+        n = split(substr($0, RSTART + 1, RLENGTH - 2), items, /[ ,]+/)
+        for (i = 1; i <= n; i++) if (items[i] != "") print items[i]
+        exit
+      }
+      on = 1
+      next
+    }
+    on && /^[^ #]/ { on = 0 }
+    on && /^ *- / { sub(/^ *- */, ""); sub(/[ #].*$/, ""); print }
+  ' "$rn_values"
+}
+private_ranges="$(values_list privateRanges)"
+central_nets="$(values_list centralNetworks)"
+own_addrs="$({
+  kc get nodes -o jsonpath='{range .items[*]}{range .status.addresses[?(@.type=="InternalIP")]}{.address}{"\n"}{end}{end}'
+  kc get endpointslices -n default -l kubernetes.io/service-name=kubernetes \
+    -o jsonpath='{range .items[*].endpoints[*]}{.addresses[0]}{"\n"}{end}'
+} 2>/dev/null | sed '/^$/d' | sort -u)"
+exposed=""
+for a in $own_addrs; do
+  [[ "$a" == *:* ]] && continue  # remote networks are IPv4
+  in_any "$a" "$private_ranges" && ! in_any "$a" "$central_nets" && exposed="${exposed} ${a}"
+done
+if [[ -z "$own_addrs" || -z "$private_ranges" ]]; then
+  warn "own addresses out of remote reach" "not checked: no node address, or no privateRanges in ${rn_values}"
+elif [[ -z "$exposed" ]]; then
+  pass "own addresses out of remote reach" "nodes and API server are public or in centralNetworks"
+else
+  fail "own addresses out of remote reach" "private and not in centralNetworks:${exposed}; add them to common/security/remote-networks/values.yaml"
+fi
 for app in "netpol-${FEDERATION_NS}-hybrid" netpol-remote-clusters "netpol-${FEDERATION_NS}-remote" "${FEDERATION_NS}-submariner-network-policy" submariner-operator; do
   st="$(kc -n "$ARGOCD_NS" get application "$app" -o jsonpath='{.status.sync.status}/{.status.health.status}' 2>/dev/null)"
   if [[ "$st" == "Synced/Healthy" ]]; then
@@ -524,14 +575,6 @@ api_cidrs() { # $1 values file: the items of apiServer.cidrs, one per line
     in_api && in_cidrs && /^    - / { sub(/^    - */, ""); sub(/[ #].*$/, ""); print; next }
     in_api && in_cidrs && /^  [^ ]/ { in_cidrs = 0 }
   ' "$1" | sort -u
-}
-in_cidr() { # $1 IPv4 address, $2 cidr: true when the address lies in the cidr
-  local ip=$1 net=${2%/*} bits=32 a b c d mask
-  [[ "$2" == */* ]] && bits=${2#*/}
-  IFS=. read -r a b c d <<<"$ip"; ip=$(( (a << 24) | (b << 16) | (c << 8) | d ))
-  IFS=. read -r a b c d <<<"$net"; net=$(( (a << 24) | (b << 16) | (c << 8) | d ))
-  mask=$(( bits == 0 ? 0 : (0xFFFFFFFF << (32 - bits)) & 0xFFFFFFFF ))
-  (( (ip & mask) == (net & mask) ))
 }
 fed_cidrs="$(api_cidrs "$repo_root/common/security/federation/values.yaml")"
 common_cidrs="$(api_cidrs "$repo_root/common/security/common-templates/values.yaml")"
