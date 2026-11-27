@@ -43,7 +43,7 @@ spec:
             name: synthetic-data  # built by deploy-worker.sh: CDEsMetadata.json and the node's CSV
       containers:
         - name: worker
-          image: madgik/exaflow_worker:1.2.1
+          image: madgik/exaflow_worker:1.3.0
           ports:
             - name: grpc
               containerPort: 5672
