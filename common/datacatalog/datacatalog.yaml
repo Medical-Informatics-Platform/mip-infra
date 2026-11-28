@@ -9,7 +9,7 @@ spec:
   project: mip-argo-project-common
   sources:
     - repoURL: https://github.com/Medical-Informatics-Platform/datacatalog
-      targetRevision: e09f1266ce7546411caf7f42b7e668754863e185  # 2.0.1
+      targetRevision: e90f7ba8cb3d189c9bff3e82340787d16a765d81  # 3.0.0
       path: kubernetes
       helm:
         valueFiles: [values.yaml, $values/common/datacatalog/values.yaml]
